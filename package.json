@@ -1,0 +1,15 @@
+{
+  "name": "supervisor-tododecks",
+  "version": "1.0.0",
+  "description": "Tablero supervisor de vendedor — Todo Decks",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0",
+    "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3"
+  }
+}
