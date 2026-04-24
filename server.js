@@ -137,7 +137,7 @@ async function getDatosVendedor() {
   );
 
   // Nombre del vendedor — desde el user_id asignado en las oportunidades
-  let vendedorNombre = 'Vendedor';
+  let vendedorNombre = 'Jonathan'; // Fallback por defecto
   try {
     // Tomar el responsable más frecuente entre las oportunidades activas
     const conteoUsers = {};
@@ -340,7 +340,7 @@ async function slackResumenManana() {
 
     const blocks = [
       { type:'header', text:{ type:'plain_text', text:`☀️ Buenos días, ${vendedor} — Reporte de ventas ${d.fecha}` }},
-      { type:'section', text:{ type:'mrkdwn', text:`_"${frase}"_` }},
+      { type:'section', text:{ type:'mrkdwn', text:`💬 _"${frase}"_` }},
       { type:'divider' },
       // Actividades hoy
       { type:'section', fields:[
@@ -405,16 +405,10 @@ async function slackCierreDia() {
       // Ventas del día — sección destacada
       ...(hayVentas ? [{
         type:'section',
-        text:{ type:'mrkdwn', text:`💵 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*
-${[
-          ...ventasHoy.ordenes.map(v=>`• 🧾 ${v.numero} · ${v.cliente} · ${fmt(v.monto)}`),
-          ...ventasHoy.crm_ganadas.map(v=>`• 🏆 ${v.nombre} · ${v.cliente} · ${fmt(v.monto)}`),
-        ].join('
-')}` }
+        text:{ type:'mrkdwn', text:`🏆 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*\n${ventasHoy.ganadas.map(v=>`• ${v.nombre} · ${v.cliente} · ${fmt(v.monto)}`).join('\n')}` }
       }] : [{
         type:'section',
-        text:{ type:'mrkdwn', text:`💵 *Ventas del día*
-— Sin ventas cerradas hoy` }
+        text:{ type:'mrkdwn', text:`💵 *Ventas del día*\nHoy se sembraron las bases para los cierres de mañana. 🌱` }
       }]),
       { type:'section', fields:[
         { type:'mrkdwn', text:`*🎯 Ganados este mes*\n${kpis.ganados_mes} cierres · ${fmt(kpis.valor_ganado_mes)}` },
