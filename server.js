@@ -42,7 +42,7 @@ async function odooCall(sessionId, model, method, args=[], kwargs={}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Cookie: sessionId },
     body: JSON.stringify({ jsonrpc:'2.0', method:'call', id:1,
-      params: { model, method, args, kwargs: { ...kwargs, context: { lang:'es_MX' } } } })
+      params: { model, method, args, kwargs: { ...kwargs, context: {} } } })
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.data?.message || JSON.stringify(d.error));
