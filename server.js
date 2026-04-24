@@ -364,7 +364,7 @@ async function slackResumenManana() {
       }] : []),
       ...( kpis.leads_hoy_sin_actividad > 0 ? [{
         type:'section',
-        text:{ type:'mrkdwn', text:`📥 *${kpis.leads_hoy_sin_actividad} lead(s) nuevo(s) hoy sin actividad programada*\nAsigna una llamada de seguimiento antes de las 2pm.` }
+        text:{ type:'mrkdwn', text:`📥 *${kpis.leads_hoy_sin_actividad} lead(s) nuevo(s) hoy sin actividad programada*\nPuedes programarles una llamada para mantener el momentum. 🚀` }
       }] : []),
       ...( !hayProblemas ? [{
         type:'section',
