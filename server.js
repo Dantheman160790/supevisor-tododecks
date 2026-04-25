@@ -502,11 +502,8 @@ async function slackCierreDia() {
       ]},
       // Actividades completadas del día
       { type:'section', fields:[
-        { type:'mrkdwn', text:`*📝 Actividades creadas hoy*\n${d.actividades_completadas?.hoy > 0
-          ? Object.entries(d.actividades_completadas?.por_tipo_hoy||{}).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+(d.actividades_completadas?.promedio_diario_semana||0)+'/día_'
-          : '⚠️ Sin actividades creadas hoy'}` },
+        { type:'mrkdwn', text:`*📝 Actividades completadas hoy*\n${d.actividades_completadas?.hoy > 0 ? Object.entries(d.actividades_completadas?.por_tipo_hoy||{}).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+(d.actividades_completadas?.promedio_diario_semana||0)+'/día_' : '— Sin actividades completadas hoy'}` },
         { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${kpis.contactos_hoy} contacto(s)` },
-        { type:'mrkdwn', text:`*👤 Contactos agregados hoy*\n${kpis.contactos_hoy}` },
       ]},
       { type:'divider' },
       { type:'section', text:{ type:'mrkdwn',
