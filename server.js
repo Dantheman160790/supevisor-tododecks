@@ -423,7 +423,7 @@ async function slackResumenManana() {
       ]},
       // KPIs rápidos
       { type:'section', fields:[
-        { type:'mrkdwn', text:`*📝 Actividades creadas ayer*\n${d.actividades_completadas?.promedio_diario_semana > 0 ? 'Promedio semana: '+d.actividades_creadas.promedio_diario_semana+'/día' : 'Sin datos aún'}` },
+        { type:'mrkdwn', text:`*📝 Actividades creadas ayer*\n${d.actividades_completadas?.promedio_diario_semana > 0 ? 'Promedio semana: '+d.actividades_completadas?.promedio_diario_semana+'/día' : 'Sin datos aún'}` },
         { type:'mrkdwn', text:`*💰 Pipeline real*\n${pip.total_oportunidades} oportunidades · ${fmt(pip.valor_total)}` },
       ]},
       { type:'section', fields:[
@@ -503,7 +503,7 @@ async function slackCierreDia() {
       // Actividades completadas del día
       { type:'section', fields:[
         { type:'mrkdwn', text:`*📝 Actividades creadas hoy*\n${d.actividades_completadas?.hoy > 0
-          ? Object.entries(d.actividades_creadas.por_tipo_hoy).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+d.actividades_creadas.promedio_diario_semana+'/día_'
+          ? Object.entries(d.actividades_completadas?.por_tipo_hoy||{}).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+(d.actividades_completadas?.promedio_diario_semana||0)+'/día_'
           : '⚠️ Sin actividades creadas hoy'}` },
         { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${kpis.contactos_hoy} contacto(s)` },
         { type:'mrkdwn', text:`*👤 Contactos agregados hoy*\n${kpis.contactos_hoy}` },
