@@ -482,15 +482,84 @@ async function slackAlertaHoraria() {
   } catch(err) { console.error('Error alerta:', err.message); }
 }
 
+
+// ── RESUMEN SEMANAL (Sábados 9am) ───────────────────
+async function slackResumenSemanal() {
+  try {
+    const d = await getDatosVendedor();
+    const act = d.actividades;
+    const pip = d.pipeline;
+    const kpis = d.kpis;
+    const vendedor = d.vendedor || 'Jonathan';
+    const frase = getFraseDelDia();
+    const hoy = new Date();
+    const lunesStr = new Date(hoy.setDate(hoy.getDate()-5)).toLocaleDateString('es-MX',{day:'numeric',month:'long',timeZone:TZ});
+    const sabStr = new Date().toLocaleDateString('es-MX',{day:'numeric',month:'long',timeZone:TZ});
+
+    const actTipos = d.actividades_creadas?.por_tipo_hoy || {};
+    const actResumen = Object.keys(actTipos).length > 0
+      ? Object.entries(actTipos).map(([t,n]) => '• '+t+': '+n).join('\n')
+      : '— Registra tus actividades en Odoo para verlas aquí';
+
+    const puntos = [];
+    if (kpis.ganados_mes > 0) puntos.push('✅ '+kpis.ganados_mes+' cierre(s) este mes — ¡excelente!');
+    else puntos.push('📌 Sin cierres aún — hay oportunidades listas en el pipeline');
+    if (kpis.nuevos_semana > 0) puntos.push('✅ '+kpis.nuevos_semana+' leads nuevos esta semana');
+    else puntos.push('💡 La próxima semana es buena para generar leads frescos');
+    if (pip.sin_actividad_3dias.length === 0) puntos.push('✅ Todas las oportunidades con seguimiento activo');
+    else puntos.push('💡 '+pip.sin_actividad_3dias.length+' oportunidad(es) para retomar el lunes');
+
+    const calientes = d.leads_calientes || {};
+    const pendientes = pip.sin_actividad_3dias || [];
+
+    const blocks = [
+      { type:'header', text:{ type:'plain_text', text:'📅 Resumen semanal, '+vendedor+' — '+lunesStr+' al '+sabStr }},
+      { type:'section', text:{ type:'mrkdwn', text:'💬 _"'+frase+'"_' }},
+      { type:'divider' },
+      { type:'section', fields:[
+        { type:'mrkdwn', text:'*🆕 Leads nuevos esta semana*\n'+kpis.nuevos_semana+' nuevos contactos' },
+        { type:'mrkdwn', text:'*🎯 Ganados este mes*\n'+kpis.ganados_mes+' cierres · '+fmt(kpis.valor_ganado_mes) },
+      ]},
+      { type:'section', fields:[
+        { type:'mrkdwn', text:'*📊 Pipeline activo*\n'+pip.total_oportunidades+' oportunidades · '+fmt(pip.valor_total) },
+        { type:'mrkdwn', text:'*📈 Tasa de conversión*\n'+kpis.tasa_conversion+'%' },
+      ]},
+      { type:'divider' },
+      { type:'section', text:{ type:'mrkdwn', text:'*📝 Actividades creadas esta semana*\n'+actResumen }},
+      { type:'divider' },
+      { type:'section', text:{ type:'mrkdwn', text:'*🏁 Evaluación de la semana:*\n'+puntos.join('\n') }},
+      ...(calientes.total > 0 ? [{
+        type:'section',
+        text:{ type:'mrkdwn', text:'*🔥 '+calientes.total+' cotización(es) activas — '+fmt(calientes.valor_total)+' en juego*\n'+
+          calientes.todos.slice(0,5).map(op=>'• '+op.nombre+' · '+fmt(op.valor)+' · '+op.dias+'d en propuesta').join('\n')+
+          '\n_¡La próxima semana es clave para cerrar estas!_' }
+      }] : []),
+      ...(pendientes.length > 0 ? [{
+        type:'section',
+        text:{ type:'mrkdwn', text:'*🌅 Oportunidades para arrancar fuerte el lunes:*\n'+
+          pendientes.slice(0,5).map(op=>'• '+op.nombre+' — '+fmt(op.valor)).join('\n') }
+      }] : []),
+      { type:'section', text:{ type:'mrkdwn', text:'*¡Buen fin de semana, '+vendedor+'! El lunes seguimos. 💪*' }},
+      { type:'context', elements:[{ type:'mrkdwn', text:'Todo Decks Supervisor · Resumen semanal · '+new Date().toLocaleString('es-MX',{timeZone:TZ}) }]}
+    ];
+
+    await sendSlack(SLACK_WEBHOOK, blocks);
+    console.log('✅ Resumen semanal enviado');
+  } catch(err) { console.error('Error resumen semanal:', err.message); }
+}
+
+
 // ── SCHEDULERS ────────────────────────────────────────
 // 9:00am Cancún (L-S)
-cron.schedule('0 15 * * 1-6', slackResumenManana, { timezone: TZ });
+cron.schedule('0 9 * * 1-5', slackResumenManana, { timezone: TZ });
+// Sábado — resumen semanal 9am (único mensaje)
+cron.schedule('0 9 * * 6', slackResumenSemanal, { timezone: TZ });
 // 6:00pm Cancún (L-S)
-cron.schedule('0 0 * * 2-7',  slackCierreDia,    { timezone: TZ });
+cron.schedule('0 18 * * 1-5', slackCierreDia,    { timezone: TZ });
 // Cada hora 10am-5pm Cancún
-cron.schedule('0 16-23 * * 1-6', slackAlertaHoraria, { timezone: TZ });
+cron.schedule('0 10-17 * * 1-5', slackAlertaHoraria, { timezone: TZ });
 // Alerta especial 2pm — leads sin seguimiento del día
-cron.schedule('0 20 * * 1-6', async () => {
+cron.schedule('0 14 * * 1-5', async () => {
   try {
     const d = await getDatosVendedor();
     if (d.kpis.leads_hoy_sin_actividad > 0) {
@@ -526,6 +595,11 @@ app.post('/api/slack/resumen', async (req, res) => {
 
 app.post('/api/slack/cierre', async (req, res) => {
   try { await slackCierreDia(); res.json({ ok:true, mensaje:'Cierre enviado' }); }
+  catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/slack/semanal', async (req, res) => {
+  try { await slackResumenSemanal(); res.json({ ok:true, mensaje:'Resumen semanal enviado' }); }
   catch(err) { res.status(500).json({ error: err.message }); }
 });
 
