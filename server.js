@@ -535,25 +535,32 @@ async function slackAlertaHoraria() {
     const d = await getDatosVendedor();
     const vencidas = d.actividades.vencidas;
     const sin3 = d.pipeline?.sin_actividad_3dias || [];
-
-    const calientes = d.pipeline?.sin_actividad_3dias || [];
     const criticos = d.leads_calientes?.criticos || [];
-    if (vencidas.length === 0 && sin3.length === 0 && criticos.length === 0) return;
+    const leadsSA = d.leads_prospectos?.detalle_sin_actividad || [];
+    const totalLeadsSA = d.leads_prospectos?.sin_actividad || 0;
+
+    // No mandar nada si todo está en orden
+    if (vencidas.length === 0 && sin3.length === 0 && criticos.length === 0 && totalLeadsSA === 0) return;
 
     const lineas = [];
     if (vencidas.length > 0) {
-      lineas.push(`*🚨 ${vencidas.length} actividad(es) vencida(s):*`);
-      vencidas.slice(0,5).forEach(a => lineas.push(`• *${a.lead}* — ${a.tipo||'Tarea'} (${a.dias_vencida}d atrasada)`));
+      lineas.push(`*📋 ${vencidas.length} actividad(es) de días anteriores lista(s) para retomar:*`);
+      vencidas.slice(0,5).forEach(a => lineas.push(`• ${a.lead} — ${a.tipo||'Seguimiento pendiente'}`));
+    }
+    if (totalLeadsSA > 0) {
+      lineas.push(`\n*👥 ${totalLeadsSA} lead(s) sin actividad programada — necesitan una próxima acción:*`);
+      leadsSA.slice(0,5).forEach(l => lineas.push(`• ${l.nombre}${l.dias>0?' · '+l.dias+'d sin acción':' · creado hoy'}`));
+      lineas.push('_Programa una llamada o email para cada uno._');
     }
     if (sin3.length > 0) {
-      lineas.push(`\n*⚠️ ${sin3.length} lead(s) sin contacto en +3 días:*`);
-      sin3.slice(0,5).forEach(op => lineas.push(`• *${op.nombre}* · ${op.etapa} · ${op.dias}d parado · ${fmt(op.valor)}`));
-      lineas.push('_Acción requerida: programar actividad hoy._');
+      lineas.push(`\n*💡 ${sin3.length} oportunidad(es) listas para retomar hoy:*`);
+      sin3.slice(0,5).forEach(op => lineas.push(`• ${op.nombre} · ${op.etapa} · ${fmt(op.valor)}`));
+      lineas.push('_Un mensaje o llamada corta puede reactivarlos._');
     }
     if (criticos.length > 0) {
-      lineas.push(`\n*🔥 ${criticos.length} cotización(es) sin respuesta en +5 días — riesgo de perder el lead:*`);
-      criticos.slice(0,5).forEach(op => lineas.push(`• *${op.nombre}* · ${op.cliente} · ${fmt(op.valor)} · ${op.dias}d sin respuesta`));
-      lineas.push('_Llamar HOY — cotización fría en 3 días._');
+      lineas.push(`\n*🔥 ${criticos.length} cotización(es) con +3 días sin respuesta:*`);
+      criticos.slice(0,5).forEach(op => lineas.push(`• ${op.nombre} · ${op.cliente} · ${fmt(op.valor)} · ${op.dias}d desde la propuesta`));
+      lineas.push('_Una llamada amigable puede acelerar la decisión._');
     }
 
     const blocks = [
