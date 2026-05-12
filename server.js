@@ -219,50 +219,64 @@ async function getDatosVendedor() {
     !actividades.some(a => a.res_id === l.id)
   );
 
-  // Bitácora del día — usando mail.message (mismo origen que actividades_completadas)
-  const bitacoraMensajes = await odooCall(sessionId, 'mail.message', 'search_read',
+  // Bitácora del día — actividades marcadas como hechas (body contiene "hecho")
+  const todosMsg = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
       ['date','>=',hoyStr+' 00:00:00'],
-      ['date','<=',hoyStr+' 23:59:59'],
-      ['mail_activity_type_id','!=',false]]],
+      ['date','<=',hoyStr+' 23:59:59']]],
     { fields:['id','body','author_id','date','res_id','record_name',
-              'mail_activity_type_id','subtype_id'], limit:200 }
+              'mail_activity_type_id','message_type','subtype_id'], limit:500 }
   );
 
-  // También notas/comentarios manuales del día
-  const notasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
-    [[['model','=','crm.lead'],
-      ['date','>=',hoyStr+' 00:00:00'],
-      ['date','<=',hoyStr+' 23:59:59'],
-      ['message_type','=','comment'],
-      ['mail_activity_type_id','=',false]]],
-    { fields:['id','body','author_id','date','res_id','record_name'], limit:100 }
-  );
+  // Filtrar los que son actividades completadas (body tiene "hecho" o tienen activity_type)
+  const actCompletadasMsg = todosMsg.filter(m => {
+    const body = (m.body||'').toLowerCase();
+    return body.includes('hecho') || m.mail_activity_type_id;
+  });
 
-  // Agrupar actividades por tipo y lead
+  // Notas/comentarios manuales (sin activity type, message_type comment)
+  const notasMsg = todosMsg.filter(m => {
+    const body = (m.body||'').toLowerCase();
+    return m.message_type === 'comment' && !body.includes('hecho') && !m.mail_activity_type_id;
+  });
+
+  // Agrupar actividades completadas por tipo
   const bitacoraAgrupada = {};
-  bitacoraMensajes.forEach(m => {
-    const tipo = m.mail_activity_type_id?.[1] || 'Actividad';
-    const lead = m.record_name || '—';
-    const texto = (m.body||'').replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').trim();
-    const key = tipo;
-    if (!bitacoraAgrupada[key]) bitacoraAgrupada[key] = { tipo, leads: [] };
-    if (texto && texto !== 'false' && texto.length > 3) {
-      bitacoraAgrupada[key].leads.push({ lead, texto: texto.length>150?texto.slice(0,150)+'...':texto, hora: m.date?.split('T')[1]?.slice(0,5)||'—' });
-    } else {
-      bitacoraAgrupada[key].leads.push({ lead, texto: '', hora: m.date?.split('T')[1]?.slice(0,5)||'—' });
+  actCompletadasMsg.forEach(m => {
+    const bodyRaw = (m.body||'').replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').trim();
+    // Detectar tipo desde el body: "Llamada hecho : feedback" o desde mail_activity_type_id
+    let tipo = m.mail_activity_type_id?.[1] || 'Actividad';
+    if (bodyRaw.toLowerCase().includes('llamada')) tipo = 'Llamada';
+    else if (bodyRaw.toLowerCase().includes('correo') || bodyRaw.toLowerCase().includes('email')) tipo = 'Email';
+    else if (bodyRaw.toLowerCase().includes('whatsapp')) tipo = 'WhatsApp';
+    else if (bodyRaw.toLowerCase().includes('reunión') || bodyRaw.toLowerCase().includes('meeting')) tipo = 'Reunión';
+
+    // Extraer feedback — lo que viene después del ":"
+    let feedback = '';
+    const partes = bodyRaw.split(':');
+    if (partes.length > 1) {
+      feedback = partes.slice(1).join(':').trim();
+      // Si el feedback es igual al tipo, no mostrar
+      if (feedback.toLowerCase() === tipo.toLowerCase()) feedback = '';
     }
+
+    if (!bitacoraAgrupada[tipo]) bitacoraAgrupada[tipo] = { tipo, leads: [] };
+    bitacoraAgrupada[tipo].leads.push({
+      lead: m.record_name || '—',
+      texto: feedback && feedback.length > 2 && feedback !== bodyRaw ? feedback : '',
+      hora: m.date?.split('T')[1]?.slice(0,5)||'—',
+    });
   });
 
   // Notas manuales por lead
   const mensajesPorLead = {};
-  notasHoy.forEach(m => {
+  notasMsg.forEach(m => {
     const texto = (m.body||'').replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').trim();
     if (!texto || texto==='false' || texto.length < 4) return;
     if (!mensajesPorLead[m.res_id]) mensajesPorLead[m.res_id] = { nombre: m.record_name||'—', mensajes:[] };
     mensajesPorLead[m.res_id].mensajes.push({
       hora: m.date?.split('T')[1]?.slice(0,5)||'—',
-      texto: texto.length>150 ? texto.slice(0,150)+'...' : texto,
+      texto: texto.length>200 ? texto.slice(0,200)+'...' : texto,
     });
   });
 
@@ -426,7 +440,7 @@ async function getDatosVendedor() {
       total: bitacoraFinal.length,
       actividades: bitacoraFinal,
       mensajes_por_lead: mensajesPorLead,
-      total_registros: bitacoraMensajes.length,
+      total_registros: actCompletadasMsg.length,
     },
     actividades_completadas: {
       hoy: totalCompletadasHoy,
@@ -704,34 +718,59 @@ async function slackBitacoraDia() {
   try {
     const d = await getDatosVendedor();
     const vendedor = d.vendedor || 'Jonathan';
-    const bitacora = d.bitacora_dia || { total:0, actividades:[], mensajes_por_lead:{} };
-    const TIPO_ICON = { 'Llamada':'📞','Call':'📞','Reunión':'🤝','Meeting':'🤝','Email':'📧','WhatsApp':'📱','Todo':'✅' };
-    const ti = t => Object.entries(TIPO_ICON).find(([k])=>t.includes(k))?.[1]||'✅';
+    const TIPO_ICON = {'Llamada':'📞','Call':'📞','Reunión':'🤝','Meeting':'🤝','Email':'📧','WhatsApp':'📱','Todo':'✅','Correo':'📧'};
+    const ti = t => Object.entries(TIPO_ICON).find(([k])=>t?.includes(k))?.[1]||'✅';
 
     const lineas = [];
 
-    // Actividades por tipo
-    if (bitacora.actividades && bitacora.actividades.length > 0) {
-      const totalActs = bitacora.actividades.reduce((a,b)=>a+b.leads.length,0);
-      lineas.push(`*✅ Actividades del día (${totalActs} registros):*`);
-      bitacora.actividades.forEach(a => {
-        const conNota = a.leads.filter(l=>l.texto).length;
-        lineas.push(`
-${ti(a.tipo)} *${a.tipo}* (${a.leads.length})`);
-        // Mostrar máximo 3 leads con nota por tipo
-        a.leads.filter(l=>l.texto).slice(0,3).forEach(l => {
-          lineas.push(`  • _${l.lead}_ — "${l.texto}"`);
-        });
-        // Si hay leads sin nota
-        const sinNota = a.leads.filter(l=>!l.texto);
-        if (sinNota.length > 0 && conNota === 0) {
-          lineas.push(`  • ${sinNota.map(l=>l.lead).slice(0,3).join(', ')}${sinNota.length>3?` +${sinNota.length-3} más`:''}`);
+    // Usar actividades.hoy que SÍ funciona — programadas para hoy
+    const actHoy = d.actividades?.hoy || [];
+    const actCompletadas = d.actividades_completadas;
+
+    // Agrupar actividades de hoy por tipo
+    const porTipo = {};
+    actHoy.forEach(a => {
+      const tipo = a.tipo || 'Actividad';
+      if (!porTipo[tipo]) porTipo[tipo] = [];
+      porTipo[tipo].push(a);
+    });
+
+    // Usar actividades_completadas — exactamente lo mismo que el cierre del día
+    const actComp = d.actividades_completadas;
+    const totalComp = actComp?.hoy || 0;
+    const porTipoComp = actComp?.por_tipo_hoy || {};
+
+    if (totalComp > 0) {
+      lineas.push(`*✅ Actividades completadas hoy (${totalComp}):*`);
+      Object.entries(porTipoComp).forEach(([tipo, count]) => {
+        lineas.push(`${ti(tipo)} *${tipo}:* ${count}`);
+      });
+    } else {
+      lineas.push(`*📋 Actividades programadas para hoy (${actHoy.length}):*`);
+      Object.entries(porTipo).forEach(([tipo, acts]) => {
+        lineas.push(`${ti(tipo)} *${tipo}:* ${acts.length} · ${acts.map(a=>a.lead).slice(0,3).join(', ')}${acts.length>3?` +${acts.length-3} más`:''}`);
+      });
+      lineas.push(`
+_Recuerda marcar cada actividad como ✅ Hecho en Odoo_`);
+    }
+
+    // Detalle por lead — usando bitacora_dia para los comentarios
+    const bitacora = d.bitacora_dia;
+    if (bitacora?.actividades?.length > 0) {
+      lineas.push(`
+*📝 Detalle por lead:*`);
+      bitacora.actividades.forEach(grupo => {
+        const conNota = grupo.leads.filter(l=>l.texto);
+        if (conNota.length > 0) {
+          lineas.push(`
+${ti(grupo.tipo)} *${grupo.tipo}*`);
+          conNota.slice(0,5).forEach(l => lineas.push(`  • _${l.lead}_ — "${l.texto}"`));
         }
       });
     }
 
-    // Notas manuales adicionales
-    const conMensajes = Object.values(bitacora.mensajes_por_lead||{}).filter(l=>l.mensajes.length>0);
+    // Notas manuales del chatter
+    const conMensajes = Object.values(bitacora?.mensajes_por_lead||{}).filter(l=>l.mensajes.length>0);
     if (conMensajes.length > 0) {
       lineas.push(`
 *💬 Notas adicionales (${conMensajes.length} leads):*`);
@@ -742,7 +781,20 @@ ${ti(a.tipo)} *${a.tipo}* (${a.leads.length})`);
       });
     }
 
-    if (lineas.length === 0) lineas.push('_Sin actividades ni notas registradas hoy. Recuerda marcar actividades como Hecho y agregar un comentario en cada lead._');
+    // Resumen del pipeline para contexto
+    const pip = d.pipeline;
+    const kpis = d.kpis;
+    lineas.push(`
+*📊 Estado del pipeline:*`);
+    lineas.push(`• ${pip.total_oportunidades} oportunidades · ${fmt(pip.valor_total)} en juego`);
+    if (kpis.ganados_mes > 0) lineas.push(`• 🏆 ${kpis.ganados_mes} cierres este mes · ${fmt(kpis.valor_ganado_mes)}`);
+    if (d.reuniones?.length > 0) {
+      lineas.push(`
+*📅 Reuniones de hoy:*`);
+      d.reuniones.forEach(r => lineas.push(`  • ${r.nombre} · ${r.inicio?.split('T')[1]?.slice(0,5)||'—'}`));
+    }
+
+    if (lineas.length === 0) lineas.push('_Sin actividades registradas hoy._');
 
     const blocks = [
       { type:'header', text:{ type:'plain_text', text:`📋 Bitácora del día — ${vendedor} · ${d.fecha}` }},
