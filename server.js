@@ -219,37 +219,54 @@ async function getDatosVendedor() {
     !actividades.some(a => a.res_id === l.id)
   );
 
-  // Bitácora del día — actividades completadas con feedback y notas del chatter
-  const bitacoraHoy = await odooCall(sessionId, 'mail.activity', 'search_read',
-    [[['date_done','=',hoyStr]]],
-    { fields:['id','activity_type_id','res_name','user_id','feedback','res_id'], limit:100 }
-  );
-
-  const mensajesHoy = await odooCall(sessionId, 'mail.message', 'search_read',
+  // Bitácora del día — usando mail.message (mismo origen que actividades_completadas)
+  const bitacoraMensajes = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
       ['date','>=',hoyStr+' 00:00:00'],
       ['date','<=',hoyStr+' 23:59:59'],
-      ['message_type','in',['comment','email']]]],
-    { fields:['id','body','author_id','date','res_id','record_name'], limit:50 }
+      ['mail_activity_type_id','!=',false]]],
+    { fields:['id','body','author_id','date','res_id','record_name',
+              'mail_activity_type_id','subtype_id'], limit:200 }
   );
 
+  // También notas/comentarios manuales del día
+  const notasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
+    [[['model','=','crm.lead'],
+      ['date','>=',hoyStr+' 00:00:00'],
+      ['date','<=',hoyStr+' 23:59:59'],
+      ['message_type','=','comment'],
+      ['mail_activity_type_id','=',false]]],
+    { fields:['id','body','author_id','date','res_id','record_name'], limit:100 }
+  );
+
+  // Agrupar actividades por tipo y lead
+  const bitacoraAgrupada = {};
+  bitacoraMensajes.forEach(m => {
+    const tipo = m.mail_activity_type_id?.[1] || 'Actividad';
+    const lead = m.record_name || '—';
+    const texto = (m.body||'').replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').trim();
+    const key = tipo;
+    if (!bitacoraAgrupada[key]) bitacoraAgrupada[key] = { tipo, leads: [] };
+    if (texto && texto !== 'false' && texto.length > 3) {
+      bitacoraAgrupada[key].leads.push({ lead, texto: texto.length>150?texto.slice(0,150)+'...':texto, hora: m.date?.split('T')[1]?.slice(0,5)||'—' });
+    } else {
+      bitacoraAgrupada[key].leads.push({ lead, texto: '', hora: m.date?.split('T')[1]?.slice(0,5)||'—' });
+    }
+  });
+
+  // Notas manuales por lead
   const mensajesPorLead = {};
-  mensajesHoy.forEach(m => {
-    const texto = (m.body||'').replace(/<[^>]*>/g,'').trim();
+  notasHoy.forEach(m => {
+    const texto = (m.body||'').replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').trim();
     if (!texto || texto==='false' || texto.length < 4) return;
     if (!mensajesPorLead[m.res_id]) mensajesPorLead[m.res_id] = { nombre: m.record_name||'—', mensajes:[] };
     mensajesPorLead[m.res_id].mensajes.push({
       hora: m.date?.split('T')[1]?.slice(0,5)||'—',
-      texto: texto.length>200 ? texto.slice(0,200)+'...' : texto,
+      texto: texto.length>150 ? texto.slice(0,150)+'...' : texto,
     });
   });
 
-  const bitacoraFinal = bitacoraHoy.map(a => ({
-    tipo: a.activity_type_id?.[1]||'Actividad',
-    lead: a.res_name||'—',
-    feedback: (a.feedback||'').replace(/<[^>]*>/g,'').trim()||'',
-    mensajes: mensajesPorLead[a.res_id]?.mensajes||[],
-  }));
+  const bitacoraFinal = Object.values(bitacoraAgrupada);
 
   // Actividades COMPLETADAS hoy (mail.message con subtipo de actividad resuelta)
   const actCompletadasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
@@ -409,6 +426,7 @@ async function getDatosVendedor() {
       total: bitacoraFinal.length,
       actividades: bitacoraFinal,
       mensajes_por_lead: mensajesPorLead,
+      total_registros: bitacoraMensajes.length,
     },
     actividades_completadas: {
       hoy: totalCompletadasHoy,
@@ -692,20 +710,32 @@ async function slackBitacoraDia() {
 
     const lineas = [];
 
-    if (bitacora.total > 0) {
-      lineas.push(`*✅ Actividades completadas hoy (${bitacora.total}):*`);
+    // Actividades por tipo
+    if (bitacora.actividades && bitacora.actividades.length > 0) {
+      const totalActs = bitacora.actividades.reduce((a,b)=>a+b.leads.length,0);
+      lineas.push(`*✅ Actividades del día (${totalActs} registros):*`);
       bitacora.actividades.forEach(a => {
+        const conNota = a.leads.filter(l=>l.texto).length;
         lineas.push(`
-${ti(a.tipo)} *${a.tipo}* — _${a.lead}_`);
-        lineas.push(a.feedback ? `  💬 "${a.feedback}"` : `  _(sin notas)_`);
+${ti(a.tipo)} *${a.tipo}* (${a.leads.length})`);
+        // Mostrar máximo 3 leads con nota por tipo
+        a.leads.filter(l=>l.texto).slice(0,3).forEach(l => {
+          lineas.push(`  • _${l.lead}_ — "${l.texto}"`);
+        });
+        // Si hay leads sin nota
+        const sinNota = a.leads.filter(l=>!l.texto);
+        if (sinNota.length > 0 && conNota === 0) {
+          lineas.push(`  • ${sinNota.map(l=>l.lead).slice(0,3).join(', ')}${sinNota.length>3?` +${sinNota.length-3} más`:''}`);
+        }
       });
     }
 
-    const conMensajes = Object.values(bitacora.mensajes_por_lead).filter(l=>l.mensajes.length>0);
+    // Notas manuales adicionales
+    const conMensajes = Object.values(bitacora.mensajes_por_lead||{}).filter(l=>l.mensajes.length>0);
     if (conMensajes.length > 0) {
       lineas.push(`
-*💬 Notas registradas en leads (${conMensajes.length}):*`);
-      conMensajes.slice(0,8).forEach(l => {
+*💬 Notas adicionales (${conMensajes.length} leads):*`);
+      conMensajes.slice(0,5).forEach(l => {
         lineas.push(`
 📝 *${l.nombre}*`);
         l.mensajes.slice(0,2).forEach(m => lineas.push(`  ${m.hora} — "${m.texto}"`));
