@@ -588,22 +588,30 @@ async function slackCierreDia() {
         { type:'mrkdwn', text:`*📝 Actividades completadas hoy*\n${d.actividades_completadas?.hoy > 0 ? Object.entries(d.actividades_completadas?.por_tipo_hoy||{}).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+(d.actividades_completadas?.promedio_diario_semana||0)+'/día_' : '— Sin actividades completadas hoy'}` },
         { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${kpis.contactos_hoy} contacto(s)` },
       ]},
-      // Bitácora detalle por lead
-      ...(d.bitacora_dia?.actividades?.length > 0 ? [(() => {
+      // Bitácora detalle por lead — todos line by line, múltiples bloques si es necesario
+      ...(d.bitacora_dia?.actividades?.length > 0 ? (() => {
         const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
         const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
+        const bloques = [];
         let txt = '*📋 Detalle de actividades:*\n';
         d.bitacora_dia.actividades.forEach(g => {
-          txt += `\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})\n`;
-          const conNota = g.leads.filter(l=>l.texto).slice(0,3);
-          const sinNota = g.leads.filter(l=>!l.texto).slice(0,4);
-          conNota.forEach(l => { txt += `• _${l.lead}_ — "${l.texto.slice(0,80)}"\n`; });
-          if (sinNota.length > 0) txt += `• ${sinNota.map(l=>l.lead).join(', ')}\n`;
+          let seccion = `\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})\n`;
+          g.leads.forEach(l => {
+            const linea = l.texto
+              ? `• _${l.lead}_ — "${l.texto.slice(0,120)}"\n`
+              : `• ${l.lead}\n`;
+            seccion += linea;
+          });
+          if ((txt + seccion).length > 2800) {
+            bloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
+            txt = seccion;
+          } else {
+            txt += seccion;
+          }
         });
-        // Slack block limit ~3000 chars
-        if (txt.length > 2800) txt = txt.slice(0, 2800) + '\n_...ver más en Odoo_';
-        return { type:'section', text:{ type:'mrkdwn', text: txt.trim() } };
-      })()]: []),
+        if (txt.trim()) bloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
+        return bloques;
+      })() : []),
       { type:'divider' },
       { type:'section', text:{ type:'mrkdwn',
         text:`*📊 Evaluación del día:*\n${puntos.join('\n')}` }
