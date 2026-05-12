@@ -270,9 +270,25 @@ async function getDatosVendedor() {
     }
 
     if (!bitacoraAgrupada[tipo]) bitacoraAgrupada[tipo] = { tipo, leads: [] };
+    // Extraer solo el texto de retroalimentación limpio
+    let feedbackLimpio = '';
+    const retroIdx = bodyRaw.toLowerCase().indexOf('retroalimentación:');
+    const feedbackIdx = bodyRaw.toLowerCase().indexOf('feedback:');
+    if (retroIdx >= 0) {
+      feedbackLimpio = bodyRaw.slice(retroIdx + 18).trim();
+    } else if (feedbackIdx >= 0) {
+      feedbackLimpio = bodyRaw.slice(feedbackIdx + 9).trim();
+    } else if (feedback && feedback.length > 2 && feedback.toLowerCase() !== tipo.toLowerCase()) {
+      feedbackLimpio = feedback;
+    }
+    // Limpiar saltos de línea extra y espacios
+    feedbackLimpio = feedbackLimpio.replace(/\s+/g, ' ').trim();
+    // Ignorar si es igual al tipo o a textos genéricos
+    const textoGenerico = ['llamada','correo electrónico','email','whatsapp','actividades pendientes','to-do','reunión','meeting'];
+    if (textoGenerico.some(t => feedbackLimpio.toLowerCase() === t)) feedbackLimpio = '';
     bitacoraAgrupada[tipo].leads.push({
       lead: m.record_name || '—',
-      texto: feedback && feedback.length > 2 && feedback !== bodyRaw ? feedback : '',
+      texto: feedbackLimpio.slice(0, 150),
       hora: m.date?.split('T')[1]?.slice(0,5)||'—',
     });
   });
@@ -576,15 +592,17 @@ async function slackCierreDia() {
       ...(d.bitacora_dia?.actividades?.length > 0 ? [(() => {
         const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
         const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
-        const lineas = ['*📋 Detalle de actividades:*'];
+        let txt = '*📋 Detalle de actividades:*\n';
         d.bitacora_dia.actividades.forEach(g => {
-          const conNota = g.leads.filter(l=>l.texto);
-          const sinNota = g.leads.filter(l=>!l.texto);
-          lineas.push(`\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})`);
-          conNota.slice(0,4).forEach(l => lineas.push(`  • _${l.lead}_ — "${l.texto}"`));
-          if (sinNota.length > 0) lineas.push(`  • ${sinNota.slice(0,4).map(l=>l.lead).join(' · ')}${sinNota.length>4?` +${sinNota.length-4} más`:''}`);
+          txt += `\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})\n`;
+          const conNota = g.leads.filter(l=>l.texto).slice(0,3);
+          const sinNota = g.leads.filter(l=>!l.texto).slice(0,4);
+          conNota.forEach(l => { txt += `• _${l.lead}_ — "${l.texto.slice(0,80)}"\n`; });
+          if (sinNota.length > 0) txt += `• ${sinNota.map(l=>l.lead).join(', ')}\n`;
         });
-        return { type:'section', text:{ type:'mrkdwn', text: lineas.join('\n') } };
+        // Slack block limit ~3000 chars
+        if (txt.length > 2800) txt = txt.slice(0, 2800) + '\n_...ver más en Odoo_';
+        return { type:'section', text:{ type:'mrkdwn', text: txt.trim() } };
       })()]: []),
       { type:'divider' },
       { type:'section', text:{ type:'mrkdwn',
