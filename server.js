@@ -291,48 +291,33 @@ async function getDatosVendedor() {
 
   const bitacoraFinal = Object.values(bitacoraAgrupada);
 
-  // Actividades COMPLETADAS hoy (mail.message con subtipo de actividad resuelta)
+  // Actividades COMPLETADAS hoy — desde mail.message con activity_type
   const actCompletadasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
       ['date','>=',hoyInicioUTC],
       ['date','<',hoyFinUTC],
       ['mail_activity_type_id','!=',false]]],
-    { fields:['id','mail_activity_type_id','author_id','date','res_id'], limit:300 }
+    { fields:['id','mail_activity_type_id','author_id','date','res_id','record_name'], limit:500 }
   );
 
-  // También buscar en mail.activity con date_done = hoy
-  const actDoneHoy = await odooCall(sessionId, 'mail.activity', 'search_read',
-    [[['date_done','>=',hoyStr]]],
-    { fields:['id','activity_type_id','res_name','user_id','date_done','feedback'], limit:200 }
-  );
-
-  // Completadas esta semana para tendencia
-  const actDoneSemana = await odooCall(sessionId, 'mail.activity', 'search_read',
-    [[['date_done','>=',inicioSemana.toISOString().split('T')[0]]]],
-    { fields:['id','activity_type_id','date_done'], limit:500 }
-  );
-
-  // Contar por tipo — hoy
+  // Contar por tipo directamente desde mail.message
   const conteoHoy = {};
-  actDoneHoy.forEach(a => {
-    const tipo = a.activity_type_id?.[1] || 'Otra';
+  actCompletadasHoy.forEach(a => {
+    const tipo = a.mail_activity_type_id?.[1] || 'Actividad';
     conteoHoy[tipo] = (conteoHoy[tipo] || 0) + 1;
   });
+  const totalCompletadasHoy = actCompletadasHoy.length;
 
-  // Si date_done no funciona en esta versión de Odoo, usar mail.message como fallback
-  const totalCompletadasHoy = actDoneHoy.length || actCompletadasHoy.length;
-  if (actDoneHoy.length === 0 && actCompletadasHoy.length > 0) {
-    actCompletadasHoy.forEach(a => {
-      const tipo = a.mail_activity_type_id?.[1] || 'Actividad';
-      conteoHoy[tipo] = (conteoHoy[tipo] || 0) + 1;
-    });
-  }
-
-  // Promedio diario esta semana
-  const diasTranscurridos = Math.max(1, new Date().getDay() || 7);
+  // Promedio semanal (misma fuente)
+  const inicioSemanaStr = inicioSemana.toISOString().split('T')[0];
+  const actDoneSemana = await odooCall(sessionId, 'mail.message', 'search_read',
+    [[['model','=','crm.lead'],
+      ['date','>=',inicioSemanaStr+' 05:00:00'],
+      ['mail_activity_type_id','!=',false]]],
+    { fields:['id','date'], limit:1000 }
+  );
+  const diasTranscurridos = Math.max(1, cancunNow.getDay() || 7);
   const promedioDiario = Math.round(actDoneSemana.length / diasTranscurridos);
-
-  // Tendencia: hoy vs promedio
   const tendencia = totalCompletadasHoy >= promedioDiario ? 'arriba' : 'abajo';
 
   // Ventas del día — solo CRM ganadas (orden de compra confirmada)
@@ -587,6 +572,20 @@ async function slackCierreDia() {
         { type:'mrkdwn', text:`*📝 Actividades completadas hoy*\n${d.actividades_completadas?.hoy > 0 ? Object.entries(d.actividades_completadas?.por_tipo_hoy||{}).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+(d.actividades_completadas?.promedio_diario_semana||0)+'/día_' : '— Sin actividades completadas hoy'}` },
         { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${kpis.contactos_hoy} contacto(s)` },
       ]},
+      // Bitácora detalle por lead
+      ...(d.bitacora_dia?.actividades?.length > 0 ? [(() => {
+        const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
+        const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
+        const lineas = ['*📋 Detalle de actividades:*'];
+        d.bitacora_dia.actividades.forEach(g => {
+          const conNota = g.leads.filter(l=>l.texto);
+          const sinNota = g.leads.filter(l=>!l.texto);
+          lineas.push(`\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})`);
+          conNota.slice(0,4).forEach(l => lineas.push(`  • _${l.lead}_ — "${l.texto}"`));
+          if (sinNota.length > 0) lineas.push(`  • ${sinNota.slice(0,4).map(l=>l.lead).join(' · ')}${sinNota.length>4?` +${sinNota.length-4} más`:''}`);
+        });
+        return { type:'section', text:{ type:'mrkdwn', text: lineas.join('\n') } };
+      })()]: []),
       { type:'divider' },
       { type:'section', text:{ type:'mrkdwn',
         text:`*📊 Evaluación del día:*\n${puntos.join('\n')}` }
