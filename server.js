@@ -219,6 +219,38 @@ async function getDatosVendedor() {
     !actividades.some(a => a.res_id === l.id)
   );
 
+  // Bitácora del día — actividades completadas con feedback y notas del chatter
+  const bitacoraHoy = await odooCall(sessionId, 'mail.activity', 'search_read',
+    [[['date_done','=',hoyStr]]],
+    { fields:['id','activity_type_id','res_name','user_id','feedback','res_id'], limit:100 }
+  );
+
+  const mensajesHoy = await odooCall(sessionId, 'mail.message', 'search_read',
+    [[['model','=','crm.lead'],
+      ['date','>=',hoyStr+' 00:00:00'],
+      ['date','<=',hoyStr+' 23:59:59'],
+      ['message_type','in',['comment','email']]]],
+    { fields:['id','body','author_id','date','res_id','record_name'], limit:50 }
+  );
+
+  const mensajesPorLead = {};
+  mensajesHoy.forEach(m => {
+    const texto = (m.body||'').replace(/<[^>]*>/g,'').trim();
+    if (!texto || texto==='false' || texto.length < 4) return;
+    if (!mensajesPorLead[m.res_id]) mensajesPorLead[m.res_id] = { nombre: m.record_name||'—', mensajes:[] };
+    mensajesPorLead[m.res_id].mensajes.push({
+      hora: m.date?.split('T')[1]?.slice(0,5)||'—',
+      texto: texto.length>200 ? texto.slice(0,200)+'...' : texto,
+    });
+  });
+
+  const bitacoraFinal = bitacoraHoy.map(a => ({
+    tipo: a.activity_type_id?.[1]||'Actividad',
+    lead: a.res_name||'—',
+    feedback: (a.feedback||'').replace(/<[^>]*>/g,'').trim()||'',
+    mensajes: mensajesPorLead[a.res_id]?.mensajes||[],
+  }));
+
   // Actividades COMPLETADAS hoy (mail.message con subtipo de actividad resuelta)
   const actCompletadasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
@@ -268,7 +300,8 @@ async function getDatosVendedor() {
     [[['type','=','opportunity'],['stage_id.is_won','=',true],
       ['date_closed','>=',hoyStr+' 00:00:00'],
       ['date_closed','<=',hoyStr+' 23:59:59']]],
-    { fields:['id','name','partner_name','expected_revenue','date_closed'], limit:100 }
+    { fields:['id','name','partner_name','expected_revenue','date_closed',
+              'source_id','medium_id','campaign_id','referred'], limit:100 }
   );
   const totalDia = Math.round(ganadadasHoy.reduce((a,v) => a+(v.expected_revenue||0), 0));
 
@@ -325,7 +358,7 @@ async function getDatosVendedor() {
     kpis: {
       ganados_mes: ganadosMes.length,
       valor_ganado_mes: Math.round(ganadosMes.reduce((a,l) => a+(l.expected_revenue||0), 0)),
-      ganados_detalle: ganadosMes.slice(0,5).map(l => ({ nombre: l.name, cliente: l.partner_name, valor: l.expected_revenue })),
+      ganados_detalle: ganadosMes.slice(0,5).map(l => ({ nombre: l.name||'—', cliente: l.partner_name||'—', valor: l.expected_revenue||0 })),
       nuevos_semana: nuevosSemanales.length,
       contactos_hoy: contactosHoy.length,
       contactos_hoy_detalle: contactosHoy.slice(0,5).map(c => ({ nombre: c.name, telefono: c.phone||'—', email: c.email||'—' })),
@@ -336,7 +369,10 @@ async function getDatosVendedor() {
     ventas_hoy: {
       total: totalDia,
       ganadas: ganadadasHoy.map(v => ({
-        nombre: v.name, cliente: v.partner_name, monto: v.expected_revenue
+        nombre: v.name || '—',
+        cliente: v.partner_name || '—',
+        monto: v.expected_revenue || 0,
+        fuente: v.source_id?.[1] || v.medium_id?.[1] || v.campaign_id?.[1] || 'Directo',
       })),
       count: ganadadasHoy.length,
     },
@@ -368,6 +404,11 @@ async function getDatosVendedor() {
         nombre: op.name, cliente: op.partner_name,
         valor: op.expected_revenue, dias: op.dias_en_propuesta, urgencia: op.urgencia
       })),
+    },
+    bitacora_dia: {
+      total: bitacoraFinal.length,
+      actividades: bitacoraFinal,
+      mensajes_por_lead: mensajesPorLead,
     },
     actividades_completadas: {
       hoy: totalCompletadasHoy,
@@ -487,7 +528,7 @@ async function slackCierreDia() {
       // Ventas del día — sección destacada
       ...(hayVentas ? [{
         type:'section',
-        text:{ type:'mrkdwn', text:`🏆 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*\n${ventasHoy.ganadas.map(v=>`• ${v.nombre} · ${v.cliente} · ${fmt(v.monto)}`).join('\n')}` }
+        text:{ type:'mrkdwn', text:`🏆 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*\n${ventasHoy.ganadas.map(v=>`• ${v.nombre||'—'} · ${v.cliente||'—'} · ${fmt(v.monto)} · 📌 ${v.fuente}`).join('\n')}` }
       }] : [{
         type:'section',
         text:{ type:'mrkdwn', text:`💵 *Ventas del día*\nHoy se sembraron las bases para los cierres de mañana. 🌱` }
@@ -640,6 +681,49 @@ async function slackResumenSemanal() {
 }
 
 
+// ── BITÁCORA DEL DÍA ─────────────────────────────────
+async function slackBitacoraDia() {
+  try {
+    const d = await getDatosVendedor();
+    const vendedor = d.vendedor || 'Jonathan';
+    const bitacora = d.bitacora_dia || { total:0, actividades:[], mensajes_por_lead:{} };
+    const TIPO_ICON = { 'Llamada':'📞','Call':'📞','Reunión':'🤝','Meeting':'🤝','Email':'📧','WhatsApp':'📱','Todo':'✅' };
+    const ti = t => Object.entries(TIPO_ICON).find(([k])=>t.includes(k))?.[1]||'✅';
+
+    const lineas = [];
+
+    if (bitacora.total > 0) {
+      lineas.push(`*✅ Actividades completadas hoy (${bitacora.total}):*`);
+      bitacora.actividades.forEach(a => {
+        lineas.push(`
+${ti(a.tipo)} *${a.tipo}* — _${a.lead}_`);
+        lineas.push(a.feedback ? `  💬 "${a.feedback}"` : `  _(sin notas)_`);
+      });
+    }
+
+    const conMensajes = Object.values(bitacora.mensajes_por_lead).filter(l=>l.mensajes.length>0);
+    if (conMensajes.length > 0) {
+      lineas.push(`
+*💬 Notas registradas en leads (${conMensajes.length}):*`);
+      conMensajes.slice(0,8).forEach(l => {
+        lineas.push(`
+📝 *${l.nombre}*`);
+        l.mensajes.slice(0,2).forEach(m => lineas.push(`  ${m.hora} — "${m.texto}"`));
+      });
+    }
+
+    if (lineas.length === 0) lineas.push('_Sin actividades ni notas registradas hoy. Recuerda marcar actividades como Hecho y agregar un comentario en cada lead._');
+
+    const blocks = [
+      { type:'header', text:{ type:'plain_text', text:`📋 Bitácora del día — ${vendedor} · ${d.fecha}` }},
+      { type:'section', text:{ type:'mrkdwn', text: lineas.join('\n') }},
+      { type:'context', elements:[{ type:'mrkdwn', text:`Todo Decks Supervisor · ${new Date().toLocaleString('es-MX',{timeZone:TZ})}` }]}
+    ];
+    await sendSlack(SLACK_WEBHOOK, blocks);
+    console.log('✅ Bitácora enviada');
+  } catch(err) { console.error('Error bitácora:', err.message); }
+}
+
 // ── SCHEDULERS ────────────────────────────────────────
 // 9:00am Cancún (L-S)
 cron.schedule('0 9 * * 1-5', slackResumenManana, { timezone: TZ });
@@ -686,6 +770,11 @@ app.post('/api/slack/resumen', async (req, res) => {
 
 app.post('/api/slack/cierre', async (req, res) => {
   try { await slackCierreDia(); res.json({ ok:true, mensaje:'Cierre enviado' }); }
+  catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/slack/bitacora', async (req, res) => {
+  try { await slackBitacoraDia(); res.json({ ok:true, mensaje:'Bitácora enviada' }); }
   catch(err) { res.status(500).json({ error: err.message }); }
 });
 
