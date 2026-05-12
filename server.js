@@ -70,12 +70,17 @@ function getFraseDelDia() {
 async function getDatosVendedor() {
   const { sessionId } = await odooAuth();
   const hoy = new Date();
-  // Calcular fecha en hora Cancún (EST = UTC-5, sin horario de verano)
-  const cancunOffset = -5 * 60; // minutos
-  const cancunDate = new Date(hoy.getTime() + (cancunOffset - hoy.getTimezoneOffset()) * 60000);
-  const hoyStr = cancunDate.toISOString().split('T')[0];
+  // Fecha en hora Cancún (EST = UTC-5 fijo, sin horario de verano)
+  const CANCUN_OFFSET_MS = 5 * 60 * 60 * 1000; // 5 horas en ms
+  const cancunNow = new Date(hoy.getTime() - CANCUN_OFFSET_MS);
+  const hoyStr = cancunNow.toISOString().split('T')[0];
+  // Rango UTC para consultas de Odoo que guarda en UTC
+  // "hoy" Cancún = hoyStr 05:00 UTC a hoyStr+1 05:00 UTC
+  const hoyInicioUTC = hoyStr + ' 05:00:00'; // medianoche Cancún en UTC
+  const hoySiguienteStr = new Date(cancunNow.getTime() + 24*60*60*1000).toISOString().split('T')[0];
+  const hoyFinUTC = hoySiguienteStr + ' 05:00:00'; // medianoche siguiente Cancún en UTC
   const en3dias = new Date(hoy); en3dias.setDate(hoy.getDate() + 3);
-  const en3diasStr = en3dias.toISOString().split('T')[0];
+  const en3diasStr = new Date(en3dias.getTime() - CANCUN_OFFSET_MS).toISOString().split('T')[0];
   const inicioSemana = new Date(hoy); inicioSemana.setDate(hoy.getDate() - hoy.getDay());
   const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
 
@@ -179,7 +184,7 @@ async function getDatosVendedor() {
 
   // Contactos nuevos hoy
   const contactosHoy = await odooCall(sessionId, 'res.partner', 'search_read',
-    [[['create_date','>=',hoyStr+' 00:00:00'],['create_date','<=',hoyStr+' 23:59:59']]],
+    [[['create_date','>=',hoyInicioUTC],['create_date','<',hoyFinUTC]]],
     { fields:['id','name','phone','email','create_date'], limit:50 }
   );
 
@@ -210,7 +215,7 @@ async function getDatosVendedor() {
 
   // Reuniones hoy
   const reuniones = await odooCall(sessionId, 'calendar.event', 'search_read',
-    [[['start','>=',hoyStr+' 00:00:00'],['start','<=',hoyStr+' 23:59:59']]],
+    [[['start','>=',hoyInicioUTC],['start','<',hoyFinUTC]]],
     { fields:['id','name','start','stop','location'], limit:50 }
   );
 
@@ -225,8 +230,9 @@ async function getDatosVendedor() {
   // Bitácora del día — actividades marcadas como hechas (body contiene "hecho")
   const todosMsg = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
-      ['date','>=',hoyStr+' 00:00:00'],
-      ['date','<=',hoyStr+' 23:59:59']]],
+      ['date','>=',hoyInicioUTC],
+      ['date','<',hoyFinUTC]]],
+
     { fields:['id','body','author_id','date','res_id','record_name',
               'mail_activity_type_id','message_type','subtype_id'], limit:500 }
   );
@@ -288,15 +294,15 @@ async function getDatosVendedor() {
   // Actividades COMPLETADAS hoy (mail.message con subtipo de actividad resuelta)
   const actCompletadasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
-      ['date','>=',hoyStr+' 00:00:00'],
-      ['date','<=',hoyStr+' 23:59:59'],
+      ['date','>=',hoyInicioUTC],
+      ['date','<',hoyFinUTC],
       ['mail_activity_type_id','!=',false]]],
     { fields:['id','mail_activity_type_id','author_id','date','res_id'], limit:300 }
   );
 
   // También buscar en mail.activity con date_done = hoy
   const actDoneHoy = await odooCall(sessionId, 'mail.activity', 'search_read',
-    [[['date_done','=',hoyStr]]],
+    [[['date_done','>=',hoyStr]]],
     { fields:['id','activity_type_id','res_name','user_id','date_done','feedback'], limit:200 }
   );
 
@@ -332,8 +338,8 @@ async function getDatosVendedor() {
   // Ventas del día — solo CRM ganadas (orden de compra confirmada)
   const ganadadasHoy = await odooCall(sessionId, 'crm.lead', 'search_read',
     [[['type','=','opportunity'],['stage_id.is_won','=',true],
-      ['date_closed','>=',hoyStr+' 00:00:00'],
-      ['date_closed','<=',hoyStr+' 23:59:59']]],
+      ['date_closed','>=',hoyInicioUTC],
+      ['date_closed','<',hoyFinUTC]]],
     { fields:['id','name','partner_name','expected_revenue','date_closed',
               'source_id','medium_id','campaign_id','referred'], limit:100 }
   );
@@ -839,6 +845,39 @@ console.log('   Cada hora (10am-5pm) → Alerta si hay problemas');
 console.log('   2:00pm → Recordatorio leads sin seguimiento\n');
 
 // ── API ───────────────────────────────────────────────
+app.get('/api/debug', async (req, res) => {
+  try {
+    const { sessionId } = await odooAuth();
+    const hoy = new Date();
+    const CANCUN_OFFSET_MS = 5 * 60 * 60 * 1000;
+    const cancunNow = new Date(hoy.getTime() - CANCUN_OFFSET_MS);
+    const hoyStr = cancunNow.toISOString().split('T')[0];
+    const hoySiguienteStr = new Date(cancunNow.getTime() + 24*60*60*1000).toISOString().split('T')[0];
+    const hoyInicioUTC = hoyStr + ' 05:00:00';
+    const hoyFinUTC = hoySiguienteStr + ' 05:00:00';
+
+    // Get last 10 mail.messages in CRM leads
+    const msgs = await odooCall(sessionId, 'mail.message', 'search_read',
+      [[['model','=','crm.lead']]],
+      { fields:['id','date','body','mail_activity_type_id','record_name'], limit:10,
+        order:'date desc' }
+    );
+
+    res.json({
+      utc_now: hoy.toISOString(),
+      cancun_now: cancunNow.toISOString(),
+      hoyStr,
+      hoyInicioUTC,
+      hoyFinUTC,
+      last_10_messages: msgs.map(m=>({
+        id: m.id, date: m.date, record: m.record_name,
+        activity_type: m.mail_activity_type_id,
+        body_preview: (m.body||'').replace(/<[^>]*>/g,'').slice(0,50)
+      }))
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/health', (req, res) => res.json({
   status:'ok', odoo: ODOO_URL||'no config', slack: SLACK_WEBHOOK?'✅':'⚠️ no config'
 }));
