@@ -441,9 +441,9 @@ async function getDatosVendedor() {
       por_tipo_hoy: conteoHoy,
       promedio_diario_semana: promedioDiario,
       tendencia,
-      detalle_hoy: actDoneHoy.slice(0,10).map(a => ({
-        tipo: a.activity_type_id?.[1], lead: a.res_name,
-        user: a.user_id?.[1], feedback: a.feedback||''
+      detalle_hoy: actCompletadasHoy.slice(0,10).map(a => ({
+        tipo: a.mail_activity_type_id?.[1], lead: a.record_name||'—',
+        user: '—', feedback: ''
       })),
     },
     vendedor: vendedorNombre,
