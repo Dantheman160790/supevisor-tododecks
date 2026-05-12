@@ -70,7 +70,10 @@ function getFraseDelDia() {
 async function getDatosVendedor() {
   const { sessionId } = await odooAuth();
   const hoy = new Date();
-  const hoyStr = hoy.toISOString().split('T')[0];
+  // Calcular fecha en hora Cancún (EST = UTC-5, sin horario de verano)
+  const cancunOffset = -5 * 60; // minutos
+  const cancunDate = new Date(hoy.getTime() + (cancunOffset - hoy.getTimezoneOffset()) * 60000);
+  const hoyStr = cancunDate.toISOString().split('T')[0];
   const en3dias = new Date(hoy); en3dias.setDate(hoy.getDate() + 3);
   const en3diasStr = en3dias.toISOString().split('T')[0];
   const inicioSemana = new Date(hoy); inicioSemana.setDate(hoy.getDate() - hoy.getDay());
