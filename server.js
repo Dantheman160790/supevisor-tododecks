@@ -142,7 +142,7 @@ async function getDatosVendedor() {
     [[['type','=','opportunity'],['active','=',true],
       ['stage_id.name','in',['Cotización Enviada','Propuesta','Quoted']]]],
     { fields:['id','name','partner_name','user_id','expected_revenue',
-              'date_last_stage_update'], limit:200 }
+              'date_last_stage_update','stage_id'], limit:200 }
   );
   cotizaciones.forEach(op => {
     const lastUpdate = new Date(op.date_last_stage_update);
@@ -162,13 +162,21 @@ async function getDatosVendedor() {
   const vOpNuevas = opNuevasHoy.filter(o => o.user_id?.[0] === uid);
     const vCotizaciones = cotizaciones.filter(o => o.user_id?.[0] === uid);
     const vOpportunidades = oportunidades.filter(o => o.user_id?.[0] === uid);
+    const vOpActivas = vOpportunidades.filter(o => {
+      const etapa = o.stage_id?.[1]||'';
+      return !['won','ganado','perdido','lost'].some(x=>etapa.toLowerCase().includes(x));
+    });
     porVendedor[nombre] = {
       nombre,
       opNuevasHoy: vOpNuevas,
       cotizaciones: vCotizaciones,
-      cotizacionesCriticas: vCotizaciones.filter(o => o.dias_en_cotizacion >= 3),
-      totalPipeline: Math.round(vOpportunidades.reduce((a,o)=>a+(o.expected_revenue||0),0)),
-      totalOportunidades: vOpportunidades.length,
+      cotizacionesCriticas: vCotizaciones.filter(o => o.dias_en_cotizacion >= 3).map(o => ({
+        nombre: o.name || '—',
+        valor: o.expected_revenue || 0,
+        dias: o.dias_en_cotizacion || 0,
+      })),
+      totalPipeline: Math.round(vOpActivas.reduce((a,o)=>a+(o.expected_revenue||0),0)),
+      totalOportunidades: vOpActivas.length,
     };
   });
 
@@ -597,9 +605,10 @@ async function slackCierreDia() {
     const ventasHoy = d.ventas_hoy;
     const hayVentas = (ventasHoy?.count || 0) > 0;
 
-    // Pipeline ACTIVO — excluir ganadas
+    // Pipeline ACTIVO — excluir ganadas/won
+    const etapasExcluir = ['won','ganado','perdido','lost'];
     const etapasActivas = Object.entries(pip.por_etapa||{})
-      .filter(([etapa]) => !etapa.toLowerCase().includes('won') && !etapa.toLowerCase().includes('ganado'));
+      .filter(([etapa]) => !etapasExcluir.some(x => etapa.toLowerCase().includes(x)));
     const pipelineActivo = etapasActivas.reduce((a,[,v]) => a + (v.total||0), 0);
     const opActivas = etapasActivas.reduce((a,[,v]) => a + (v.count||0), 0);
 
