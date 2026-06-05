@@ -622,6 +622,8 @@ async function slackCierreDia() {
     const kpis = d.kpis;
     const ventasHoy = d.ventas_hoy;
     const hayVentas = (ventasHoy?.count || 0) > 0;
+    const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
+    const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
 
     // Pipeline ACTIVO — excluir ganadas/won
     const etapasExcluir = ['won','ganado','perdido','lost'];
