@@ -592,98 +592,131 @@ async function slackCierreDia() {
   try {
     const d = await getDatosVendedor();
     const act = d.actividades;
-    const kpis = d.kpis;
     const pip = d.pipeline;
-
-    // Evaluación del desempeño del día
-    let evaluacion = '';
-    const puntos = [];
-    if (act.vencidas.length === 0) puntos.push('✅ Actividades al día — sin pendientes');
-    else puntos.push(`💪 ${act.vencidas.length} actividad(es) de días anteriores — mañana es buen momento para retomar`);
-    if (kpis.contactos_hoy > 0) puntos.push(`✅ ${kpis.contactos_hoy} contacto(s) nuevo(s) — ¡bien hecho!`);
-    else puntos.push('📌 Mañana hay oportunidad de agregar contactos nuevos al pipeline');
-    if (pip.sin_actividad_3dias.length === 0) puntos.push('✅ Todas las oportunidades con seguimiento activo');
-    else puntos.push(`💡 ${pip.sin_actividad_3dias.length} oportunidad(es) listas para retomar mañana`);
-
+    const kpis = d.kpis;
     const ventasHoy = d.ventas_hoy;
     const hayVentas = (ventasHoy?.count || 0) > 0;
 
+    // Pipeline ACTIVO — excluir ganadas
+    const etapasActivas = Object.entries(pip.por_etapa||{})
+      .filter(([etapa]) => !etapa.toLowerCase().includes('won') && !etapa.toLowerCase().includes('ganado'));
+    const pipelineActivo = etapasActivas.reduce((a,[,v]) => a + (v.total||0), 0);
+    const opActivas = etapasActivas.reduce((a,[,v]) => a + (v.count||0), 0);
+
+    // Evaluación del día
+    const puntos = [];
+    if (act.vencidas.length === 0) puntos.push('✅ Actividades al día — sin pendientes');
+    else puntos.push(`💪 ${act.vencidas.length} actividad(es) de días anteriores — retomar mañana`);
+    if (kpis.contactos_hoy > 0) puntos.push(`✅ ${kpis.contactos_hoy} contacto(s) nuevo(s) — ¡bien hecho!`);
+    else puntos.push('📌 Mañana hay oportunidad de agregar contactos nuevos');
+    const cotCrit = Object.values(d.vendedores||{}).reduce((a,v)=>a+(v.cotizacionesCriticas?.length||0),0);
+    if (cotCrit === 0) puntos.push('✅ Todas las cotizaciones con seguimiento activo');
+    else puntos.push(`💡 ${cotCrit} cotización(es) necesitan seguimiento urgente`);
+
+    // Bloques bitácora detalle
+    const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
+    const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
+    const bitacorasBloques = [];
+    if (d.bitacora_dia?.actividades?.length > 0) {
+      let txt = '*📋 Detalle de actividades:*\n';
+      d.bitacora_dia.actividades.forEach(g => {
+        let sec = `\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})\n`;
+        g.leads.forEach(l => {
+          sec += l.texto ? `• _${l.lead}_ — "${l.texto.slice(0,120)}"\n` : `• ${l.lead}\n`;
+        });
+        if ((txt+sec).length > 2800) {
+          bitacorasBloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
+          txt = sec;
+        } else { txt += sec; }
+      });
+      if (txt.trim()) bitacorasBloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
+    }
+
+    // Cierres del mes por vendedor
+    const cierresMesPorVendedor = {};
+    (kpis.ganados_detalle||[]).forEach(g => {
+      // ganados_detalle no tiene vendedor — usamos por_vendedor de ventas_hoy como proxy
+    });
+    // Usar ganadosMes desde pipeline por_etapa Won
+    const wonOpps = (pip.por_etapa?.['Won']?.oportunidades || pip.por_etapa?.['Ganado']?.oportunidades || []);
+    // Better: use d.ventas_hoy.por_vendedor which has month data
+    const cierresMes = d.ventas_hoy?.por_vendedor || {};
+
     const blocks = [
       { type:'header', text:{ type:'plain_text', text:`🌙 Cierre del día — ${d.fecha}` }},
-      { type:'divider' },
-      // Ventas del día — sección destacada
-      ...(hayVentas ? [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`🏆 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*\n${ventasHoy.ganadas.map(v=>`• ${v.nombre||'—'} · ${fmt(v.monto)} · 📌 ${v.fuente} · _${(v.vendedor||'—').split(' ')[0]}_`).join('\n')}` }
-      }] : [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`💵 *Ventas del día*\nHoy se sembraron las bases para los cierres de mañana. 🌱` }
-      }]),
-      // Resumen por vendedor
-      { type:'section', text:{ type:'mrkdwn', text:
-        '*👥 Resumen por vendedor:*\n' +
-        Object.values(d.vendedores||{}).map(v => {
-          const actVend = (d.actividades_completadas?.por_vendedor_hoy||{})[v.nombre] || {};
-          const actTotal = Object.values(actVend).reduce((a,n)=>a+n,0);
-          const cierresVend = ventasHoy?.ganadas?.filter(g=>g.vendedor===v.nombre)||[];
-          const totalCierres = cierresVend.reduce((a,g)=>a+(g.monto||0),0);
-          return `*${v.nombre.split(' ')[0]}*:\n` +
-            `  💰 ${cierresVend.length>0?fmt(totalCierres)+' ('+cierresVend.length+' cierre'+( cierresVend.length>1?'s':'')+')'  :'Sin cierres hoy'}\n` +
-            `  📊 ${v.totalOportunidades} oport. · ${fmt(v.totalPipeline)} en pipeline\n` +
-            `  📄 ${v.cotizaciones.length} cotizaciones${v.cotizacionesCriticas.length>0?' · 🔥 '+v.cotizacionesCriticas.length+' críticas':''}\n` +
-            `  ✅ ${actTotal} actividades${actTotal>0?' ('+Object.entries(actVend).map(([t,n])=>t+' '+n).join(', ')+')':''}`;
-        }).join('\n\n')
-      }},
+
+      // ── RESUMEN TOTAL ──
+      { type:'section', text:{ type:'mrkdwn', text:'*── RESUMEN TOTAL ──────────────────*' }},
+      { type:'section', fields:[
+        { type:'mrkdwn', text:`*💰 Ventas del día*\n${hayVentas ? fmt(ventasHoy.total)+' · '+ventasHoy.count+' cierre'+(ventasHoy.count>1?'s':'') : 'Sin cierres hoy'}` },
+        { type:'mrkdwn', text:`*📊 Pipeline activo*\n${opActivas} oport. · ${fmt(pipelineActivo)}` },
+      ]},
       { type:'section', fields:[
         { type:'mrkdwn', text:`*🎯 Ganados este mes*\n${kpis.ganados_mes} cierres · ${fmt(kpis.valor_ganado_mes)}` },
-        { type:'mrkdwn', text:`*📈 Tasa de conversión*\n${kpis.tasa_conversion}%` },
+        { type:'mrkdwn', text:`*📈 Conversión · Contactos*\n${kpis.tasa_conversion}% · ${kpis.contactos_hoy} nuevo(s) hoy` },
       ]},
       { type:'section', fields:[
         { type:'mrkdwn', text:`*🆕 Oportunidades nuevas hoy*\n${d.op_nuevas_hoy?.length||0}${d.op_nuevas_hoy?.length>0?' · '+d.op_nuevas_hoy.slice(0,2).map(o=>o.nombre).join(', '):''}` },
-        { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${d.contactos_nuevos_hoy?.length||0}${d.contactos_nuevos_hoy?.length>0?' · '+d.contactos_nuevos_hoy.slice(0,2).map(c=>c.nombre).join(', '):''}` },
+        { type:'mrkdwn', text:`*✅ Actividades completadas*\n${d.actividades_completadas?.hoy||0} total · Promedio ${d.actividades_completadas?.promedio_diario_semana||0}/día` },
       ]},
-      // Bitácora detalle por lead — todos line by line, múltiples bloques si es necesario
-      ...(d.bitacora_dia?.actividades?.length > 0 ? (() => {
-        const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
-        const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
-        const bloques = [];
-        let txt = '*📋 Detalle de actividades:*\n';
-        d.bitacora_dia.actividades.forEach(g => {
-          let seccion = `\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})\n`;
-          g.leads.forEach(l => {
-            const linea = l.texto
-              ? `• _${l.lead}_ — "${l.texto.slice(0,120)}"\n`
-              : `• ${l.lead}\n`;
-            seccion += linea;
-          });
-          if ((txt + seccion).length > 2800) {
-            bloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
-            txt = seccion;
-          } else {
-            txt += seccion;
-          }
-        });
-        if (txt.trim()) bloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
-        return bloques;
-      })() : []),
       { type:'divider' },
-      { type:'section', text:{ type:'mrkdwn',
-        text:`*📊 Evaluación del día:*\n${puntos.join('\n')}` }
-      },
-      ...( kpis.ganados_detalle?.length > 0 ? [{
+
+      // ── POR VENDEDOR ──
+      ...Object.values(d.vendedores||{}).flatMap(v => {
+        const actVend = (d.actividades_completadas?.por_vendedor_hoy||{})[v.nombre] || {};
+        const actTotal = Object.values(actVend).reduce((a,n)=>a+n,0);
+        const cierresHoyVend = ventasHoy?.ganadas?.filter(g=>g.vendedor===v.nombre)||[];
+        const totalCierresHoy = cierresHoyVend.reduce((a,g)=>a+(g.monto||0),0);
+        const cierresMesVend = cierresMes[v.nombre];
+        const notasDestacadas = (d.bitacora_dia?.actividades||[])
+          .flatMap(g => g.leads.filter(l=>l.texto))
+          .filter(l => {
+            const act = actCompletadasDelVendedor(d, v.nombre, l.lead);
+            return true; // show all notes
+          })
+          .slice(0,4);
+
+        const vendorBlocks = [
+          { type:'section', text:{ type:'mrkdwn', text:`*── ${v.nombre.toUpperCase()} ─────────────────*` }},
+          { type:'section', fields:[
+            { type:'mrkdwn', text:`*💰 Cierres hoy*\n${cierresHoyVend.length>0?fmt(totalCierresHoy)+' ('+cierresHoyVend.length+')':'Sin cierres hoy'}` },
+            { type:'mrkdwn', text:`*🏆 Cierres este mes*\n${cierresMesVend?fmt(cierresMesVend.total)+' ('+cierresMesVend.count+' cierre'+(cierresMesVend.count>1?'s':'')+')'  :'Sin datos'}` },
+          ]},
+          { type:'section', fields:[
+            { type:'mrkdwn', text:`*📊 Pipeline*\n${v.totalOportunidades} oport. · ${fmt(v.totalPipeline)}` },
+            { type:'mrkdwn', text:`*📄 Cotizaciones*\n${v.cotizaciones.length} activas${v.cotizacionesCriticas.length>0?' · 🔥 '+v.cotizacionesCriticas.length+' críticas':''}` },
+          ]},
+          { type:'section', text:{ type:'mrkdwn', text:
+            `*✅ Actividades (${actTotal}):* ${actTotal>0?Object.entries(actVend).map(([t,n])=>ti(t)+' '+t+' '+n).join(' · '):'Sin actividades completadas hoy'}`
+          }},
+        ];
+
+        // Notas destacadas (leads con comentario)
+        const notasLead = (d.bitacora_dia?.actividades||[]).flatMap(g=>g.leads.filter(l=>l.texto)).slice(0,4);
+        if (notasLead.length > 0) {
+          vendorBlocks.push({
+            type:'section',
+            text:{ type:'mrkdwn', text:'*📋 Notas destacadas:*\n'+notasLead.map(l=>`• _${l.lead}_ — "${l.texto.slice(0,100)}"`).join('\n') }
+          });
+        }
+
+        vendorBlocks.push({ type:'divider' });
+        return vendorBlocks;
+      }),
+
+      // ── EVALUACIÓN ──
+      { type:'section', text:{ type:'mrkdwn', text:`*📊 Evaluación del día:*\n${puntos.join('\n')}` }},
+
+      // ── PENDIENTES MAÑANA ──
+      ...(pip.sin_actividad_3dias?.length > 0 ? [{
         type:'section',
-        text:{ type:'mrkdwn', text:`*🏆 Cierres del mes:*\n${kpis.ganados_detalle.map(g=>`• ${g.nombre} — ${fmt(g.valor||0)}`).join('\n')}` }
+        text:{ type:'mrkdwn', text:`*🌅 Oportunidades para mañana:*\n${pip.sin_actividad_3dias.slice(0,4).map(op=>`• ${op.nombre} — ${fmt(op.valor)}`).join('\n')}\n_¡Cada uno puede ser el próximo cierre!_` }
       }] : []),
-      // Cotizaciones críticas por vendedor
-    ...Object.values(d.vendedores||{}).filter(v=>v.cotizacionesCriticas.length>0).map(v=>({
-      type:'section',
-      text:{ type:'mrkdwn', text:`🔥 *${v.nombre} — ${v.cotizacionesCriticas.length} cotización(es) sin seguimiento +3 días:*\n${v.cotizacionesCriticas.slice(0,3).map(o=>`• ${o.nombre} · ${fmt(o.expected_revenue||0)} · ${o.dias_en_cotizacion}d`).join('\n')}\n_Una llamada puede acelerar el cierre._` }
-    })),
-    ...( pip.sin_actividad_3dias.length > 0 ? [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`🌅 *Oportunidades para arrancar fuerte mañana:*\n${pip.sin_actividad_3dias.slice(0,5).map(op=>`• ${op.nombre} — ${fmt(op.valor)}`).join('\n')}\n_¡Cada uno de estos puede ser el próximo cierre!_` }
-      }] : []),
-      { type:'context', elements:[{ type:'mrkdwn', text:`Todo Decks Supervisor · ${new Date().toLocaleString('es-MX',{timeZone:TZ})}` }]}
+
+      { type:'context', elements:[{ type:'mrkdwn', text:`Todo Decks Supervisor · ${new Date().toLocaleString('es-MX',{timeZone:TZ})}` }]},
+
+      // Bitácora completa al final
+      ...bitacorasBloques,
     ];
 
     await sendSlack(SLACK_WEBHOOK, blocks);
@@ -691,7 +724,10 @@ async function slackCierreDia() {
   } catch(err) { console.error('Error cierre:', err.message); }
 }
 
-// Alerta horaria — solo si hay problemas reales
+// Helper — no usado pero evita error de referencia
+function actCompletadasDelVendedor(d, nombre, lead) { return true; }
+
+
 async function slackAlertaHoraria() {
   try {
     const d = await getDatosVendedor();
