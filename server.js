@@ -404,7 +404,13 @@ async function getDatosVendedor() {
   const calientesAlto     = leadsCalientes.filter(op => op.urgencia === 'alto');
   const valorCalientes    = leadsCalientes.reduce((a,op) => a+(op.expected_revenue||0), 0);
 
-  const totalPipeline = oportunidades.reduce((a,op) => a+(op.expected_revenue||0), 0);
+  // Pipeline ACTIVO — excluir ganadas y perdidas
+  const ETAPAS_EXCLUIR = ['won','ganado','perdido','lost'];
+  const oportunidadesActivas = oportunidades.filter(op => {
+    const etapa = (op.stage_id?.[1]||'').toLowerCase();
+    return !ETAPAS_EXCLUIR.some(x => etapa.includes(x));
+  });
+  const totalPipeline = oportunidadesActivas.reduce((a,op) => a+(op.expected_revenue||0), 0);
 
   return {
     fecha: hoyStr,
@@ -421,9 +427,9 @@ async function getDatosVendedor() {
     },
     pipeline: {
       por_etapa: porEtapa,
-      total_oportunidades: oportunidades.length,
+      total_oportunidades: oportunidadesActivas.length,
       valor_total: Math.round(totalPipeline),
-      ticket_promedio: oportunidades.length > 0 ? Math.round(totalPipeline/oportunidades.length) : 0,
+      ticket_promedio: oportunidadesActivas.length > 0 ? Math.round(totalPipeline/oportunidadesActivas.length) : 0,
       sin_actividad_3dias: sinActividad3dias.map(op => ({
         nombre: op.name, cliente: op.partner_name,
         etapa: op.stage_id?.[1], dias: op.dias_sin_movimiento,
@@ -612,34 +618,9 @@ async function slackCierreDia() {
     const pipelineActivo = etapasActivas.reduce((a,[,v]) => a + (v.total||0), 0);
     const opActivas = etapasActivas.reduce((a,[,v]) => a + (v.count||0), 0);
 
-    // Evaluación del día
-    const puntos = [];
-    if (act.vencidas.length === 0) puntos.push('✅ Actividades al día — sin pendientes');
-    else puntos.push(`💪 ${act.vencidas.length} actividad(es) de días anteriores — retomar mañana`);
-    if (kpis.contactos_hoy > 0) puntos.push(`✅ ${kpis.contactos_hoy} contacto(s) nuevo(s) — ¡bien hecho!`);
-    else puntos.push('📌 Mañana hay oportunidad de agregar contactos nuevos');
-    const cotCrit = Object.values(d.vendedores||{}).reduce((a,v)=>a+(v.cotizacionesCriticas?.length||0),0);
-    if (cotCrit === 0) puntos.push('✅ Todas las cotizaciones con seguimiento activo');
-    else puntos.push(`💡 ${cotCrit} cotización(es) necesitan seguimiento urgente`);
 
-    // Bloques bitácora detalle
-    const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Todo':'✅'};
-    const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
-    const bitacorasBloques = [];
-    if (d.bitacora_dia?.actividades?.length > 0) {
-      let txt = '*📋 Detalle de actividades:*\n';
-      d.bitacora_dia.actividades.forEach(g => {
-        let sec = `\n${ti(g.tipo)} *${g.tipo}* (${g.leads.length})\n`;
-        g.leads.forEach(l => {
-          sec += l.texto ? `• _${l.lead}_ — "${l.texto.slice(0,120)}"\n` : `• ${l.lead}\n`;
-        });
-        if ((txt+sec).length > 2800) {
-          bitacorasBloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
-          txt = sec;
-        } else { txt += sec; }
-      });
-      if (txt.trim()) bitacorasBloques.push({ type:'section', text:{ type:'mrkdwn', text: txt.trim() } });
-    }
+
+
 
     // Cierres del mes por vendedor
     const cierresMesPorVendedor = {};
@@ -713,19 +694,11 @@ async function slackCierreDia() {
         return vendorBlocks;
       }),
 
-      // ── EVALUACIÓN ──
-      { type:'section', text:{ type:'mrkdwn', text:`*📊 Evaluación del día:*\n${puntos.join('\n')}` }},
 
-      // ── PENDIENTES MAÑANA ──
-      ...(pip.sin_actividad_3dias?.length > 0 ? [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`*🌅 Oportunidades para mañana:*\n${pip.sin_actividad_3dias.slice(0,4).map(op=>`• ${op.nombre} — ${fmt(op.valor)}`).join('\n')}\n_¡Cada uno puede ser el próximo cierre!_` }
-      }] : []),
+
+
 
       { type:'context', elements:[{ type:'mrkdwn', text:`Todo Decks Supervisor · ${new Date().toLocaleString('es-MX',{timeZone:TZ})}` }]},
-
-      // Bitácora completa al final
-      ...bitacorasBloques,
     ];
 
     await sendSlack(SLACK_WEBHOOK, blocks);
