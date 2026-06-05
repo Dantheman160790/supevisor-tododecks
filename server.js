@@ -523,13 +523,25 @@ async function getDatosVendedor() {
 
 // ── SLACK ─────────────────────────────────────────────
 async function sendSlack(webhookUrl, blocks) {
-  if (!webhookUrl) return;
+  if (!webhookUrl) { console.log('⚠️ No webhook URL'); return; }
+  const body = JSON.stringify({ blocks });
   const r = await fetch(webhookUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ blocks })
+    body
   });
-  if (!r.ok) console.error('Slack error:', r.status, await r.text());
+  const txt = await r.text();
+  if (!r.ok || txt !== 'ok') {
+    console.error('Slack error:', r.status, txt);
+    console.error('Blocks count:', blocks.length);
+    // Log each block type to find the problem
+    blocks.forEach((b,i) => {
+      const textLen = b.text?.text?.length || b.fields?.reduce((a,f)=>a+(f.text?.length||0),0) || 0;
+      if (textLen > 2900) console.error(`Block ${i} too long: ${textLen} chars, type: ${b.type}`);
+    });
+  } else {
+    console.log(`✅ Slack sent OK (${blocks.length} blocks)`);
+  }
 }
 
 const fmt = n => '$' + Math.round(n||0).toLocaleString('es-MX');
