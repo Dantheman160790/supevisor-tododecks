@@ -116,49 +116,68 @@ async function getDatosVendedor() {
     porEtapa[etapa].count++;
   });
 
-  // Leads activos (prospectos sin calificar — type='lead')
-  const leads = await odooCall(sessionId, 'crm.lead', 'search_read',
-    [[['type','=','lead'],['active','=',true]]],
-    { fields:['id','name','partner_name','user_id','create_date',
-              'date_last_stage_update','activity_state','activity_ids'], limit:300 }
+  // ── VENDEDORES — Jonathan y Isabel ──────────────────
+  const VENDEDORES = ['Jonathan Tapia', 'Isabel del Peral'];
+  const todosVendedores = await odooCall(sessionId, 'res.users', 'search_read',
+    [[['share','=',false],['active','=',true]]],
+    { fields:['id','name'], limit:20 }
+  );
+  const vendedoresMap = {};
+  todosVendedores.forEach(u => {
+    if (VENDEDORES.some(n => u.name.includes(n.split(' ')[0]))) {
+      vendedoresMap[u.id] = u.name;
+    }
+  });
+  const vendedorIds = Object.keys(vendedoresMap).map(Number);
+
+  // ── OPORTUNIDADES NUEVAS HOY (por vendedor) ─────────
+  const opNuevasHoy = await odooCall(sessionId, 'crm.lead', 'search_read',
+    [[['type','=','opportunity'],['active','=',true],
+      ['create_date','>=',hoyInicioUTC],['create_date','<',hoyFinUTC]]],
+    { fields:['id','name','partner_name','user_id','expected_revenue','stage_id'], limit:100 }
   );
 
-  // Actividades futuras programadas (para cruzar con leads)
-  const actFuturas = await odooCall(sessionId, 'mail.activity', 'search_read',
-    [[['res_model','=','crm.lead'],
-      ['date_deadline','>=',hoyStr]]],
-    { fields:['id','res_id','date_deadline','activity_type_id'], limit:500 }
+  // ── COTIZACIONES ENVIADAS (por vendedor) ────────────
+  const cotizaciones = await odooCall(sessionId, 'crm.lead', 'search_read',
+    [[['type','=','opportunity'],['active','=',true],
+      ['stage_id.name','in',['Cotización Enviada','Propuesta','Quoted']]]],
+    { fields:['id','name','partner_name','user_id','expected_revenue',
+              'date_last_stage_update'], limit:200 }
   );
-  const idsConActividad = new Set(actFuturas.map(a => a.res_id));
-
-  // Leads convertidos a oportunidad esta semana
-  const leadsConvertidosSemana = await odooCall(sessionId, 'crm.lead', 'search_read',
-    [[['type','=','opportunity'],
-      ['create_date','>=',inicioSemana.toISOString().split('T')[0]+' 00:00:00']]],
-    { fields:['id','name','create_date'], limit:100 }
-  );
-
-  // Leads perdidos esta semana (activos=false + fecha)
-  const leadsPerdidosSemana = await odooCall(sessionId, 'crm.lead', 'search_read',
-    [[['type','=','lead'],['active','=',false],
-      ['date_last_stage_update','>=',inicioSemana.toISOString().split('T')[0]+' 00:00:00']]],
-    { fields:['id','name','lost_reason_id'], limit:100 }
-  );
-
-  // Leads nuevos hoy
-  const leadsNuevosHoy = leads.filter(l => l.create_date?.startsWith(hoyStr));
-
-  // LA REGLA: Lead sin actividad futura programada = abandonado
-  leads.forEach(l => {
-    l.tiene_actividad = idsConActividad.has(l.id);
-    const created = new Date(l.create_date);
-    l.dias_sin_actividad = Math.floor((hoy - created) / (1000*60*60*24));
+  cotizaciones.forEach(op => {
+    const lastUpdate = new Date(op.date_last_stage_update);
+    op.dias_en_cotizacion = Math.floor((hoy - lastUpdate) / (1000*60*60*24));
   });
 
-  // Leads sin actividad futura (necesitan seguimiento)
-  const leadsSinActividad = leads.filter(l => !l.tiene_actividad);
-  // Leads nuevos de hoy sin actividad (más urgente)
-  const leadsNuevosHoySinActividad = leadsNuevosHoy.filter(l => !l.tiene_actividad);
+  // ── CONTACTOS NUEVOS HOY ─────────────────────────────
+  const contactosNuevosHoy = await odooCall(sessionId, 'res.partner', 'search_read',
+    [[['create_date','>=',hoyInicioUTC],['create_date','<',hoyFinUTC]]],
+    { fields:['id','name','phone','email','create_date'], limit:50 }
+  );
+
+  // Agrupar por vendedor
+  const porVendedor = {};
+  vendedorIds.forEach(uid => {
+    const nombre = vendedoresMap[uid];
+  const vOpNuevas = opNuevasHoy.filter(o => o.user_id?.[0] === uid);
+    const vCotizaciones = cotizaciones.filter(o => o.user_id?.[0] === uid);
+    const vOpportunidades = oportunidades.filter(o => o.user_id?.[0] === uid);
+    porVendedor[nombre] = {
+      nombre,
+      opNuevasHoy: vOpNuevas,
+      cotizaciones: vCotizaciones,
+      cotizacionesCriticas: vCotizaciones.filter(o => o.dias_en_cotizacion >= 3),
+      totalPipeline: Math.round(vOpportunidades.reduce((a,o)=>a+(o.expected_revenue||0),0)),
+      totalOportunidades: vOpportunidades.length,
+    };
+  });
+
+  // También total sin filtro de vendedor para compatibilidad
+  const leadsNuevosHoy = []; // Ya no usamos leads
+  const leadsSinActividad = [];
+  const leadsNuevosHoySinActividad = [];
+  const leadsConvertidosSemana = { length: 0 };
+  const leadsPerdidosSemana = { length: 0 };
 
   // Leads sin actividad +3 días (ALERTA CRÍTICA)
   const sinActividad3dias = oportunidades.filter(op => {
@@ -173,7 +192,7 @@ async function getDatosVendedor() {
   const ganadosMes = await odooCall(sessionId, 'crm.lead', 'search_read',
     [[['type','=','opportunity'],['stage_id.is_won','=',true],
       ['date_closed','>=',inicioMes+' 00:00:00']]],
-    { fields:['id','name','partner_name','expected_revenue','date_closed'], limit:200 }
+    { fields:['id','name','partner_name','expected_revenue','date_closed','user_id'], limit:200 }
   );
 
   // Leads nuevos esta semana
@@ -318,9 +337,13 @@ async function getDatosVendedor() {
 
   // Contar por tipo directamente desde mail.message
   const conteoHoy = {};
+  const conteoHoyPorVendedor = {};
   actCompletadasHoy.forEach(a => {
     const tipo = a.mail_activity_type_id?.[1] || 'Actividad';
+    const autor = a.author_id?.[1] || 'Desconocido';
     conteoHoy[tipo] = (conteoHoy[tipo] || 0) + 1;
+    if (!conteoHoyPorVendedor[autor]) conteoHoyPorVendedor[autor] = {};
+    conteoHoyPorVendedor[autor][tipo] = (conteoHoyPorVendedor[autor][tipo] || 0) + 1;
   });
   const totalCompletadasHoy = actCompletadasHoy.length;
 
@@ -342,9 +365,17 @@ async function getDatosVendedor() {
       ['date_closed','>=',hoyInicioUTC],
       ['date_closed','<',hoyFinUTC]]],
     { fields:['id','name','partner_name','expected_revenue','date_closed',
-              'source_id','medium_id','campaign_id','referred'], limit:100 }
+              'source_id','medium_id','campaign_id','user_id'], limit:100 }
   );
   const totalDia = Math.round(ganadadasHoy.reduce((a,v) => a+(v.expected_revenue||0), 0));
+  // Ganadas del mes por vendedor
+  const ganadosMesPorVendedor = {};
+  ganadosMes.forEach(v => {
+    const vend = v.user_id?.[1] || 'Sin asignar';
+    if (!ganadosMesPorVendedor[vend]) ganadosMesPorVendedor[vend] = { count:0, total:0 };
+    ganadosMesPorVendedor[vend].count++;
+    ganadosMesPorVendedor[vend].total += v.expected_revenue||0;
+  });
 
   // Leads CALIENTES — en etapa Propuesta (cotización enviada)
   const leadsCalientes = await odooCall(sessionId, 'crm.lead', 'search_read',
@@ -414,21 +445,27 @@ async function getDatosVendedor() {
         cliente: v.partner_name || '—',
         monto: v.expected_revenue || 0,
         fuente: v.source_id?.[1] || v.medium_id?.[1] || v.campaign_id?.[1] || 'Directo',
+        vendedor: v.user_id?.[1] || '—',
       })),
+      por_vendedor: ganadosMesPorVendedor,
       count: ganadadasHoy.length,
     },
+    vendedores: porVendedor,
+    contactos_nuevos_hoy: contactosNuevosHoy.map(c => ({
+      nombre: c.name, telefono: c.phone||'—', email: c.email||'—'
+    })),
+    op_nuevas_hoy: opNuevasHoy.map(o => ({
+      nombre: o.name, cliente: o.partner_name||'—',
+      vendedor: o.user_id?.[1]||'—', valor: o.expected_revenue||0
+    })),
     leads_prospectos: {
-      total: leads.length,
-      nuevos_hoy: leadsNuevosHoy.length,
-      sin_actividad: leadsSinActividad.length,
-      nuevos_sin_actividad: leadsNuevosHoySinActividad.length,
-      convertidos_semana: leadsConvertidosSemana.length,
-      perdidos_semana: leadsPerdidosSemana.length,
-      detalle_sin_actividad: leadsSinActividad.slice(0,5).map(l => ({
-        nombre: l.name || l.partner_name || '—',
-        dias: l.dias_sin_actividad,
-        user: l.user_id?.[1]
-      })),
+      total: 0,
+      nuevos_hoy: 0,
+      sin_actividad: 0,
+      nuevos_sin_actividad: 0,
+      convertidos_semana: 0,
+      perdidos_semana: 0,
+      detalle_sin_actividad: [],
     },
     leads_calientes: {
       total: leadsCalientes.length,
@@ -455,6 +492,7 @@ async function getDatosVendedor() {
     actividades_completadas: {
       hoy: totalCompletadasHoy,
       por_tipo_hoy: conteoHoy,
+      por_vendedor_hoy: conteoHoyPorVendedor,
       promedio_diario_semana: promedioDiario,
       tendencia,
       detalle_hoy: actCompletadasHoy.slice(0,10).map(a => ({
@@ -506,12 +544,17 @@ async function slackResumenManana() {
       ]},
       // KPIs rápidos
       { type:'section', fields:[
-        { type:'mrkdwn', text:`*📝 Actividades creadas ayer*\n${d.actividades_completadas?.promedio_diario_semana > 0 ? 'Promedio semana: '+d.actividades_completadas?.promedio_diario_semana+'/día' : 'Sin datos aún'}` },
-        { type:'mrkdwn', text:`*💰 Pipeline real*\n${pip.total_oportunidades} oportunidades · ${fmt(pip.valor_total)}` },
+        { type:'mrkdwn', text:`*💰 Pipeline total*\n${pip.total_oportunidades} oportunidades · ${fmt(pip.valor_total)}` },
+        { type:'mrkdwn', text:`*🆕 Oportunidades nuevas hoy*\n${d.op_nuevas_hoy?.length||0} nuevas · ${d.contactos_nuevos_hoy?.length||0} contactos nuevos` },
       ]},
+      // Por vendedor
+      ...Object.values(d.vendedores||{}).map(v => ({
+        type:'section',
+        text:{ type:'mrkdwn', text:`*👤 ${v.nombre}*\n🆕 ${v.opNuevasHoy.length} oportunidades nuevas hoy\n📄 ${v.cotizaciones.length} cotizaciones activas${v.cotizacionesCriticas.length>0?' · 🔥 '+v.cotizacionesCriticas.length+' críticas (+3d)':''}` }
+      })),
       { type:'section', fields:[
-        { type:'mrkdwn', text:`*👥 Prospectos activos (leads)*\n${d.leads_prospectos?.total||0} en prospección · ${d.leads_prospectos?.nuevos_hoy||0} nuevos hoy` },
-        { type:'mrkdwn', text:`*🔄 Convertidos esta semana*\n${d.leads_prospectos?.convertidos_semana||0} leads → oportunidad` },
+        { type:'mrkdwn', text:`*📊 Promedio actividades semana*\n${d.actividades_completadas?.promedio_diario_semana||0}/día` },
+        { type:'mrkdwn', text:`*👥 Contactos nuevos hoy*\n${d.contactos_nuevos_hoy?.length||0}${d.contactos_nuevos_hoy?.length>0?' · '+d.contactos_nuevos_hoy.slice(0,2).map(c=>c.nombre).join(', '):''}` },
       ]},
       { type:'divider' },
       // ALERTAS — sección de presión
@@ -519,10 +562,11 @@ async function slackResumenManana() {
         type:'section',
         text:{ type:'mrkdwn', text:`📋 *Tienes ${act.vencidas.length} actividad(es) pendiente(s) de días anteriores — buen momento para retomar el contacto* 💪\n${act.vencidas.map(a=>`• ${a.lead} — ${a.tipo}`).join('\n')}` }
       }] : []),
-      ...( d.leads_prospectos?.sin_actividad > 0 ? [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`👥 *${d.leads_prospectos.sin_actividad} lead(s) sin actividad programada — necesitan una próxima acción*\n${d.leads_prospectos.detalle_sin_actividad.slice(0,3).map(l=>`• ${l.nombre}${l.dias>0?' · '+l.dias+'d sin acción':' · creado hoy'}`).join('\n')}\n_Programa una llamada o email para cada uno._` }
-      }] : []),
+      // Cotizaciones críticas por vendedor
+    ...Object.values(d.vendedores||{}).filter(v=>v.cotizacionesCriticas.length>0).map(v=>({
+      type:'section',
+      text:{ type:'mrkdwn', text:`🔥 *${v.nombre} — ${v.cotizacionesCriticas.length} cotización(es) sin seguimiento +3 días:*\n${v.cotizacionesCriticas.slice(0,3).map(o=>`• ${o.nombre} · ${fmt(o.expected_revenue||0)} · ${o.dias_en_cotizacion}d`).join('\n')}\n_Una llamada puede acelerar el cierre._` }
+    })),
     ...( pip.sin_actividad_3dias.length > 0 ? [{
         type:'section',
         text:{ type:'mrkdwn', text:`💡 *${pip.sin_actividad_3dias.length} oportunidad(es) listas para retomar — llevan unos días sin contacto*\n${pip.sin_actividad_3dias.slice(0,5).map(op=>`• ${op.nombre} · ${op.etapa} · ${fmt(op.valor)}`).join('\n')}\n_Una llamada hoy puede hacer la diferencia._` }
@@ -570,23 +614,33 @@ async function slackCierreDia() {
       // Ventas del día — sección destacada
       ...(hayVentas ? [{
         type:'section',
-        text:{ type:'mrkdwn', text:`🏆 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*\n${ventasHoy.ganadas.map(v=>`• ${v.nombre||'—'} · ${v.cliente||'—'} · ${fmt(v.monto)} · 📌 ${v.fuente}`).join('\n')}` }
+        text:{ type:'mrkdwn', text:`🏆 *VENTAS DEL DÍA — ${fmt(ventasHoy.total)}*\n${ventasHoy.ganadas.map(v=>`• ${v.nombre||'—'} · ${fmt(v.monto)} · 📌 ${v.fuente} · _${(v.vendedor||'—').split(' ')[0]}_`).join('\n')}` }
       }] : [{
         type:'section',
         text:{ type:'mrkdwn', text:`💵 *Ventas del día*\nHoy se sembraron las bases para los cierres de mañana. 🌱` }
       }]),
+      // Resumen por vendedor
+      { type:'section', text:{ type:'mrkdwn', text:
+        '*👥 Resumen por vendedor:*\n' +
+        Object.values(d.vendedores||{}).map(v => {
+          const actVend = (d.actividades_completadas?.por_vendedor_hoy||{})[v.nombre] || {};
+          const actTotal = Object.values(actVend).reduce((a,n)=>a+n,0);
+          const cierresVend = ventasHoy?.ganadas?.filter(g=>g.vendedor===v.nombre)||[];
+          const totalCierres = cierresVend.reduce((a,g)=>a+(g.monto||0),0);
+          return `*${v.nombre.split(' ')[0]}*:\n` +
+            `  💰 ${cierresVend.length>0?fmt(totalCierres)+' ('+cierresVend.length+' cierre'+( cierresVend.length>1?'s':'')+')'  :'Sin cierres hoy'}\n` +
+            `  📊 ${v.totalOportunidades} oport. · ${fmt(v.totalPipeline)} en pipeline\n` +
+            `  📄 ${v.cotizaciones.length} cotizaciones${v.cotizacionesCriticas.length>0?' · 🔥 '+v.cotizacionesCriticas.length+' críticas':''}\n` +
+            `  ✅ ${actTotal} actividades${actTotal>0?' ('+Object.entries(actVend).map(([t,n])=>t+' '+n).join(', ')+')':''}`;
+        }).join('\n\n')
+      }},
       { type:'section', fields:[
         { type:'mrkdwn', text:`*🎯 Ganados este mes*\n${kpis.ganados_mes} cierres · ${fmt(kpis.valor_ganado_mes)}` },
         { type:'mrkdwn', text:`*📈 Tasa de conversión*\n${kpis.tasa_conversion}%` },
       ]},
       { type:'section', fields:[
-        { type:'mrkdwn', text:`*👥 Leads activos*\n${d.leads_prospectos?.total||0} prospectos · ${d.leads_prospectos?.nuevos_hoy||0} nuevos hoy` },
-        { type:'mrkdwn', text:`*🔄 Semana: conversión*\n${d.leads_prospectos?.convertidos_semana||0} → oportunidad · ${d.leads_prospectos?.perdidos_semana||0} perdidos` },
-      ]},
-      // Actividades completadas del día
-      { type:'section', fields:[
-        { type:'mrkdwn', text:`*📝 Actividades completadas hoy*\n${d.actividades_completadas?.hoy > 0 ? Object.entries(d.actividades_completadas?.por_tipo_hoy||{}).map(([t,n])=>`• ${t}: ${n}`).join('\n')+'\n_Promedio semana: '+(d.actividades_completadas?.promedio_diario_semana||0)+'/día_' : '— Sin actividades completadas hoy'}` },
-        { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${kpis.contactos_hoy} contacto(s)` },
+        { type:'mrkdwn', text:`*🆕 Oportunidades nuevas hoy*\n${d.op_nuevas_hoy?.length||0}${d.op_nuevas_hoy?.length>0?' · '+d.op_nuevas_hoy.slice(0,2).map(o=>o.nombre).join(', '):''}` },
+        { type:'mrkdwn', text:`*👤 Contactos nuevos hoy*\n${d.contactos_nuevos_hoy?.length||0}${d.contactos_nuevos_hoy?.length>0?' · '+d.contactos_nuevos_hoy.slice(0,2).map(c=>c.nombre).join(', '):''}` },
       ]},
       // Bitácora detalle por lead — todos line by line, múltiples bloques si es necesario
       ...(d.bitacora_dia?.actividades?.length > 0 ? (() => {
@@ -620,10 +674,11 @@ async function slackCierreDia() {
         type:'section',
         text:{ type:'mrkdwn', text:`*🏆 Cierres del mes:*\n${kpis.ganados_detalle.map(g=>`• ${g.nombre} — ${fmt(g.valor||0)}`).join('\n')}` }
       }] : []),
-      ...( d.leads_prospectos?.sin_actividad > 0 ? [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`👥 *${d.leads_prospectos.sin_actividad} lead(s) sin actividad programada — necesitan una próxima acción*\n${d.leads_prospectos.detalle_sin_actividad.slice(0,3).map(l=>`• ${l.nombre}${l.dias>0?' · '+l.dias+'d sin acción':' · creado hoy'}`).join('\n')}\n_Programa una llamada o email para cada uno._` }
-      }] : []),
+      // Cotizaciones críticas por vendedor
+    ...Object.values(d.vendedores||{}).filter(v=>v.cotizacionesCriticas.length>0).map(v=>({
+      type:'section',
+      text:{ type:'mrkdwn', text:`🔥 *${v.nombre} — ${v.cotizacionesCriticas.length} cotización(es) sin seguimiento +3 días:*\n${v.cotizacionesCriticas.slice(0,3).map(o=>`• ${o.nombre} · ${fmt(o.expected_revenue||0)} · ${o.dias_en_cotizacion}d`).join('\n')}\n_Una llamada puede acelerar el cierre._` }
+    })),
     ...( pip.sin_actividad_3dias.length > 0 ? [{
         type:'section',
         text:{ type:'mrkdwn', text:`🌅 *Oportunidades para arrancar fuerte mañana:*\n${pip.sin_actividad_3dias.slice(0,5).map(op=>`• ${op.nombre} — ${fmt(op.valor)}`).join('\n')}\n_¡Cada uno de estos puede ser el próximo cierre!_` }
