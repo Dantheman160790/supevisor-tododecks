@@ -368,8 +368,9 @@ async function getDatosVendedor() {
   const bitacoraFinal = Object.values(bitacoraAgrupada);
 
   // Actividades COMPLETADAS hoy — desde mail.message con activity_type
+  // Actividades completadas hoy — crm.lead cubre leads Y oportunidades en Odoo
   const actCompletadasHoy = await odooCall(sessionId, 'mail.message', 'search_read',
-    [[['model','=','crm.lead'],
+    [[['model','in',['crm.lead','res.partner']],
       ['date','>=',hoyInicioUTC],
       ['date','<',hoyFinUTC],
       ['mail_activity_type_id','!=',false]]],
@@ -792,14 +793,7 @@ async function slackCierreDia() {
           }},
         ];
 
-        // Notas destacadas (leads con comentario)
-        const notasLead = (d.bitacora_dia?.actividades||[]).flatMap(g=>g.leads.filter(l=>l.texto)).slice(0,4);
-        if (notasLead.length > 0) {
-          vendorBlocks.push({
-            type:'section',
-            text:{ type:'mrkdwn', text:'*📋 Notas destacadas:*\n'+notasLead.map(l=>`• _${l.lead}_ — "${l.texto.slice(0,100)}"`).join('\n') }
-          });
-        }
+
 
         vendorBlocks.push({ type:'divider' });
         return vendorBlocks;
