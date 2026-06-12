@@ -67,6 +67,39 @@ function getFraseDelDia() {
   return FRASES[dia % FRASES.length];
 }
 
+
+// ── KPIs JONATHAN ────────────────────────────────────
+const KPIS_JONATHAN = {
+  nombre: 'Jonathan Tapia',
+  diario: {
+    'Llamada':           { meta: 20, label: '📞 Llamadas' },
+    'Visita de Campo':   { meta: 4,  label: '🏃 Visitas campo' },
+    'Entrega de muestra':{ meta: 2,  label: '🎁 Muestras' },
+  },
+  semanal: {
+    citas_agendadas:     { meta: 10,     label: '📅 Citas agendadas' },
+    'Visita de Campo':   { meta: 20,     label: '🏃 Visitas campo' },
+    'Entrega de muestra':{ meta: 8,      label: '🎁 Muestras' },
+    cotizaciones:        { meta: 5,      label: '📄 Cotizaciones enviadas' },
+    oportunidades:       { meta: 5,      label: '🆕 Oportunidades creadas' },
+  },
+  meta_mensual: 300000,
+};
+
+function semaforoKPI(actual, meta) {
+  const pct = meta > 0 ? actual / meta : 1;
+  if (pct >= 0.9) return '🟢';
+  if (pct >= 0.5) return '🟡';
+  return '🔴';
+}
+
+function fmtKPI(actual, meta) {
+  const status = semaforoKPI(actual, meta);
+  const diff = meta - actual;
+  const extra = diff > 0 ? ` · Faltan ${diff}` : ' · ✅ Meta lograda';
+  return `${actual} / ≥${meta}  ${status}${extra}`;
+}
+
 async function getDatosVendedor() {
   const { sessionId } = await odooAuth();
   const hoy = new Date();
@@ -355,14 +388,38 @@ async function getDatosVendedor() {
   });
   const totalCompletadasHoy = actCompletadasHoy.length;
 
-  // Promedio semanal (misma fuente)
+  // Actividades de la semana — para scorecard KPIs
   const inicioSemanaStr = inicioSemana.toISOString().split('T')[0];
   const actDoneSemana = await odooCall(sessionId, 'mail.message', 'search_read',
     [[['model','=','crm.lead'],
       ['date','>=',inicioSemanaStr+' 05:00:00'],
       ['mail_activity_type_id','!=',false]]],
-    { fields:['id','date'], limit:1000 }
+    { fields:['id','date','mail_activity_type_id','author_id'], limit:1000 }
   );
+
+  // Oportunidades creadas esta semana (para KPI)
+  const opCreadasSemana = await odooCall(sessionId, 'crm.lead', 'search_read',
+    [[['type','=','opportunity'],
+      ['create_date','>=',inicioSemanaStr+' 05:00:00']]],
+    { fields:['id','user_id'], limit:200 }
+  );
+
+  // Citas agendadas esta semana (actividades tipo Reunión programadas)
+  const citasSemana = await odooCall(sessionId, 'mail.activity', 'search_read',
+    [[['activity_type_id.name','=','Reunión'],
+      ['create_date','>=',inicioSemanaStr+' 05:00:00']]],
+    { fields:['id','user_id','create_date'], limit:200 }
+  );
+
+  // Calcular scorecard semanal por vendedor
+  const scorecardSemana = {};
+  actDoneSemana.forEach(m => {
+    const tipo = m.mail_activity_type_id?.[1] || '';
+    const autor = m.author_id?.[1] || '';
+    if (!scorecardSemana[autor]) scorecardSemana[autor] = {};
+    scorecardSemana[autor][tipo] = (scorecardSemana[autor][tipo] || 0) + 1;
+  });
+
   const diasTranscurridos = Math.max(1, cancunNow.getDay() || 7);
   const promedioDiario = Math.round(actDoneSemana.length / diasTranscurridos);
   const tendencia = totalCompletadasHoy >= promedioDiario ? 'arriba' : 'abajo';
@@ -503,6 +560,9 @@ async function getDatosVendedor() {
       mensajes_por_lead: mensajesPorLead,
       total_registros: actCompletadasMsg.length,
     },
+    scorecard_semana: scorecardSemana,
+    op_creadas_semana: opCreadasSemana,
+    citas_semana: citasSemana,
     actividades_completadas: {
       hoy: totalCompletadasHoy,
       por_tipo_hoy: conteoHoy,
@@ -691,7 +751,44 @@ async function slackCierreDia() {
             { type:'mrkdwn', text:`*📄 Cotizaciones*\n${v.cotizaciones.length} activas${v.cotizacionesCriticas.length>0?' · 🔥 '+v.cotizacionesCriticas.length+' críticas':''}` },
           ]},
           { type:'section', text:{ type:'mrkdwn', text:
+            (v.nombre.includes('Jonathan') ?
+            // Jonathan → scorecard KPIs
+            (() => {
+              const sc = d.scorecard_semana?.[v.nombre] || {};
+              const opSem = (d.op_creadas_semana||[]).filter(o=>o.user_id?.[1]===v.nombre).length;
+              const citSem = (d.citas_semana||[]).filter(c=>c.user_id?.[1]===v.nombre).length;
+              const ventasMes = (d.ventas_hoy?.por_vendedor||{})[v.nombre]?.total || 0;
+              const kpis = KPIS_JONATHAN;
+
+              let txt = `*✅ Actividades hoy (${actTotal}):*\n`;
+              // KPIs diarios
+              Object.entries(kpis.diario).forEach(([tipo, cfg]) => {
+                const val = actVend[tipo] || 0;
+                txt += `${cfg.label}: ${fmtKPI(val, cfg.meta)}\n`;
+              });
+              txt += `\n*📊 KPIs semana:*\n`;
+              // Citas agendadas semana
+              txt += `${kpis.semanal.citas_agendadas.label}: ${fmtKPI(citSem, kpis.semanal.citas_agendadas.meta)}\n`;
+              // Actividades semana por tipo
+              ['Visita de Campo','Entrega de muestra'].forEach(tipo => {
+                const val = sc[tipo] || 0;
+                txt += `${kpis.semanal[tipo].label}: ${fmtKPI(val, kpis.semanal[tipo].meta)}\n`;
+              });
+              // Cotizaciones semana (etapa Cotización Enviada)
+              const cotSem = v.cotizaciones?.length || 0;
+              txt += `${kpis.semanal.cotizaciones.label}: ${fmtKPI(cotSem, kpis.semanal.cotizaciones.meta)}\n`;
+              // Oportunidades creadas semana
+              txt += `${kpis.semanal.oportunidades.label}: ${fmtKPI(opSem, kpis.semanal.oportunidades.meta)}\n`;
+              txt += `\n*💰 Meta mensual:*\n`;
+              const pctMes = Math.round(ventasMes/kpis.meta_mensual*100);
+              txt += `${fmt(ventasMes)} / ${fmt(kpis.meta_mensual)} · ${pctMes}% ${semaforoKPI(ventasMes, kpis.meta_mensual)}`;
+              if (ventasMes < kpis.meta_mensual) txt += ` · Faltan ${fmt(kpis.meta_mensual - ventasMes)}`;
+              return txt;
+            })()
+            :
+            // Otros vendedores → resumen simple
             `*✅ Actividades (${actTotal}):* ${actTotal>0?Object.entries(actVend).map(([t,n])=>ti(t)+' '+t+' '+n).join(' · '):'Sin actividades completadas hoy'}`
+          )
           }},
         ];
 
@@ -723,6 +820,35 @@ async function slackCierreDia() {
 // Helper — no usado pero evita error de referencia
 function actCompletadasDelVendedor(d, nombre, lead) { return true; }
 
+
+async function slackAlertaVencidas() {
+  try {
+    const d = await getDatosVendedor();
+    const vencidas = d.actividades.vencidas;
+    if (vencidas.length === 0) return; // Silencio si todo al día
+
+    const TI = {'Call':'📞','Llamada':'📞','Meeting':'🤝','Reunión':'🤝','Email':'📧','Correo electrónico':'📧','WhatsApp':'📱','Visita de Campo':'🏃','Entrega de muestra':'🎁','Todo':'✅'};
+    const ti = t => Object.entries(TI).find(([k])=>t?.includes(k))?.[1]||'✅';
+
+    const lineas = vencidas.slice(0,8).map(a => {
+      const dias = a.dias_vencida;
+      const tiempo = dias >= 1 ? `${dias}d` : 'hoy';
+      return `${ti(a.tipo)} *${a.tipo}* · _${a.lead}_ · vencida hace ${tiempo}`;
+    });
+
+    const blocks = [
+      { type:'section', text:{ type:'mrkdwn',
+        text:`⚠️ *${vencidas.length} actividad${vencidas.length>1?'es':''} vencida${vencidas.length>1?'s':''}*\n\n${lineas.join('\n')}\n\n_Cada actividad sin completar es un lead que se enfría._`
+      }},
+      { type:'context', elements:[{ type:'mrkdwn',
+        text:`Alerta automática · ${new Date().toLocaleString('es-MX',{timeZone:TZ})}`
+      }]}
+    ];
+
+    await sendSlack(SLACK_WEBHOOK, blocks);
+    console.log(`✅ Alerta vencidas: ${vencidas.length}`);
+  } catch(err) { console.error('Error alerta vencidas:', err.message); }
+}
 
 async function slackAlertaHoraria() {
   try {
@@ -929,25 +1055,10 @@ ${ti(grupo.tipo)} *${grupo.tipo}*`);
 
 // ── SCHEDULERS ────────────────────────────────────────
 // 9:00am Cancún (L-S)
-cron.schedule('0 9 * * 1-5', slackResumenManana, { timezone: TZ });
-// Sábado — resumen semanal 9am (único mensaje)
-cron.schedule('0 9 * * 6', slackResumenSemanal, { timezone: TZ });
-// 6:00pm Cancún (L-S)
-cron.schedule('0 18 * * 1-5', slackCierreDia,    { timezone: TZ });
-// Cada hora 10am-5pm Cancún
-cron.schedule('0 10-17 * * 1-5', slackAlertaHoraria, { timezone: TZ });
-// Alerta especial 2pm — leads sin seguimiento del día
-cron.schedule('0 14 * * 1-5', async () => {
-  try {
-    const d = await getDatosVendedor();
-    if ((d.leads_prospectos?.nuevos_sin_actividad||0) > 0) {
-      await sendSlack(SLACK_WEBHOOK_ALERTS, [{
-        type:'section',
-        text:{ type:'mrkdwn', text:`⏰ *Recordatorio de la tarde:* Tienes ${d.kpis.leads_hoy_sin_actividad} lead(s) nuevo(s) que aún no tienen actividad programada. ¡Todavía hay tiempo para hacer ese primer contacto hoy! 💪` }
-      }]);
-    }
-  } catch(e){}
-}, { timezone: TZ });
+// 6:00pm L-V — Cierre del día con scorecard KPIs
+cron.schedule('0 18 * * 1-5', slackCierreDia, { timezone: TZ });
+// 9am-5pm hora L-V — Alerta actividades vencidas (solo si hay)
+cron.schedule('0 9-17 * * 1-5', slackAlertaVencidas, { timezone: TZ });
 
 console.log('\n✅ Todo Decks Supervisor corriendo en http://localhost:'+PORT);
 console.log('⏰ Schedulers:');
