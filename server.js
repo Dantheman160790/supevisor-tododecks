@@ -114,7 +114,11 @@ async function getDatosVendedor() {
   const hoyFinUTC = hoySiguienteStr + ' 05:00:00'; // medianoche siguiente Cancún en UTC
   const en3dias = new Date(hoy); en3dias.setDate(hoy.getDate() + 3);
   const en3diasStr = new Date(en3dias.getTime() - CANCUN_OFFSET_MS).toISOString().split('T')[0];
-  const inicioSemana = new Date(hoy); inicioSemana.setDate(hoy.getDate() - hoy.getDay());
+  // Inicio de semana = lunes (México)
+  const inicioSemana = new Date(cancunNow);
+  const diaSemana = cancunNow.getDay() || 7; // domingo=7, lunes=1
+  inicioSemana.setDate(cancunNow.getDate() - diaSemana + 1);
+  inicioSemana.setHours(0,0,0,0);
   const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1).toISOString().split('T')[0];
 
   // Actividades
@@ -170,7 +174,7 @@ async function getDatosVendedor() {
     { fields:['id','name','partner_name','user_id','expected_revenue','stage_id'], limit:100 }
   );
 
-  // ── COTIZACIONES ENVIADAS (por vendedor) ────────────
+  // ── COTIZACIONES ENVIADAS esta semana (por vendedor) ──
   const cotizaciones = await odooCall(sessionId, 'crm.lead', 'search_read',
     [[['type','=','opportunity'],['active','=',true],
       ['stage_id.name','in',['Cotización Enviada','Propuesta','Quoted']]]],
@@ -180,7 +184,12 @@ async function getDatosVendedor() {
   cotizaciones.forEach(op => {
     const lastUpdate = new Date(op.date_last_stage_update);
     op.dias_en_cotizacion = Math.floor((hoy - lastUpdate) / (1000*60*60*24));
+    // Flag si fue movida a esta etapa esta semana (Lun-Dom)
+    op.enviada_esta_semana = lastUpdate >= inicioSemana;
   });
+
+  // Para KPI semanal — solo cotizaciones enviadas ESTA semana
+  const cotizacionesSemana = cotizaciones.filter(op => op.enviada_esta_semana);
 
   // ── CONTACTOS NUEVOS HOY ─────────────────────────────
   const contactosNuevosHoy = await odooCall(sessionId, 'res.partner', 'search_read',
@@ -194,6 +203,7 @@ async function getDatosVendedor() {
     const nombre = vendedoresMap[uid];
   const vOpNuevas = opNuevasHoy.filter(o => o.user_id?.[0] === uid);
     const vCotizaciones = cotizaciones.filter(o => o.user_id?.[0] === uid);
+    const vCotizacionesSemana = cotizacionesSemana.filter(o => o.user_id?.[0] === uid);
     const vOpportunidades = oportunidades.filter(o => o.user_id?.[0] === uid);
     const vOpActivas = vOpportunidades.filter(o => {
       const etapa = o.stage_id?.[1]||'';
@@ -210,6 +220,7 @@ async function getDatosVendedor() {
       })),
       totalPipeline: Math.round(vOpActivas.reduce((a,o)=>a+(o.expected_revenue||0),0)),
       totalOportunidades: vOpActivas.length,
+      cotizacionesSemana: vCotizacionesSemana,
     };
   });
 
@@ -776,7 +787,7 @@ async function slackCierreDia() {
                 txt += `${kpis.semanal[tipo].label}: ${fmtKPI(val, kpis.semanal[tipo].meta)}\n`;
               });
               // Cotizaciones semana (etapa Cotización Enviada)
-              const cotSem = v.cotizaciones?.length || 0;
+              const cotSem = (d.vendedores?.[v.nombre]?.cotizacionesSemana?.length) || 0;
               txt += `${kpis.semanal.cotizaciones.label}: ${fmtKPI(cotSem, kpis.semanal.cotizaciones.meta)}\n`;
               // Oportunidades creadas semana
               txt += `${kpis.semanal.oportunidades.label}: ${fmtKPI(opSem, kpis.semanal.oportunidades.meta)}\n`;
